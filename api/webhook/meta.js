@@ -19,15 +19,27 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+function classifyButtonText(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text.includes('decline') || text.includes('reject') || text.includes('no') || text.includes('اعتذر') || text.includes('أعتذر') || text.includes('معتذر') || text.includes('عذر')) return 'btn_decline';
+  if (text.includes('confirm') || text.includes('attend') || text.includes('yes') || text.includes('ارغب') || text.includes('أرغب') || text.includes('حضور') || text.includes('حاضر')) return 'btn_confirm';
+  return text;
+}
+
 function mapButtonId(message) {
   if (message.type === 'interactive' && message.interactive?.type === 'button_reply') {
-    return message.interactive.button_reply.id;
+    return classifyButtonText(message.interactive.button_reply.id || message.interactive.button_reply.title);
+  }
+  if (message.type === 'interactive' && message.interactive?.type === 'list_reply') {
+    return classifyButtonText(message.interactive.list_reply.id || message.interactive.list_reply.title);
   }
   if (message.type === 'button') {
-    const payload = String(message.button?.payload || message.button?.text || '').toLowerCase();
-    if (payload.includes('اعتذر') || payload.includes('أعتذر') || payload.includes('decline') || payload.includes('عذر')) return 'btn_decline';
-    if (payload.includes('ارغب') || payload.includes('أرغب') || payload.includes('confirm') || payload.includes('حضور')) return 'btn_confirm';
+    return classifyButtonText(message.button?.payload || message.button?.text);
   }
+  // Some Meta payloads send the reply object without message.type matching old examples.
+  if (message.button) return classifyButtonText(message.button.payload || message.button.text);
+  if (message.interactive?.button_reply) return classifyButtonText(message.interactive.button_reply.id || message.interactive.button_reply.title);
   return '';
 }
 
@@ -39,6 +51,7 @@ async function findGuestForMessage(phoneNumber, contextMessageId) {
 }
 
 async function processButton(message) {
+  if (message.type === 'interactive' && message.interactive?.type === 'list_reply') return;
   const phoneNumber = normalizePhone(message.from);
   const buttonId = mapButtonId(message);
   const contextMessageId = message.context?.id;
@@ -55,7 +68,8 @@ async function processButton(message) {
     });
     await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أعتذر عن الحضور', status: 'received' });
     await logTimeline(guest, 'rsvp_declined', { cardsCount }, 'meta');
-    await sendRsvpDeclined(phoneNumber);
+    const declinedSend = await sendRsvpDeclined(phoneNumber);
+    await logWebhookEvent('rsvp_declined_confirmation_sent', { phoneNumber, guestId: guest.id, result: declinedSend });
     return;
   }
 
@@ -63,7 +77,8 @@ async function processButton(message) {
     await updateGuest(guest.id, { rsvpStatus: 'pending', pendingCount: cardsCount, repliedAt: new Date().toISOString() });
     await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أرغب في الحضور - بانتظار عدد البطاقات', status: 'received' });
     await logTimeline(guest, 'rsvp_confirm_requested_count', { cardsCount }, 'meta');
-    await sendCardCountSelection(phoneNumber, guest.guestName, cardsCount);
+    const listSend = await sendCardCountSelection(phoneNumber, guest.guestName, cardsCount);
+    await logWebhookEvent('rsvp_card_count_list_sent', { phoneNumber, guestId: guest.id, result: listSend });
     return;
   }
 
@@ -72,8 +87,10 @@ async function processButton(message) {
   });
   await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أرغب في الحضور', status: 'received' });
   await logTimeline(guest, 'rsvp_confirmed', { confirmedCount: 1 }, 'meta');
-  await sendRsvpConfirmed(phoneNumber);
+  const confirmSend = await sendRsvpConfirmed(phoneNumber);
+  await logWebhookEvent('rsvp_confirmed_template_sent', { phoneNumber, guestId: guest.id, result: confirmSend });
 }
+
 
 async function processListReply(message) {
   if (!(message.type === 'interactive' && message.interactive?.type === 'list_reply')) return;
@@ -93,8 +110,10 @@ async function processListReply(message) {
   });
   await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'list_reply', messageBody: `تأكيد ${confirmedCount} من ${cardsCount}`, status: 'received' });
   await logTimeline(guest, 'rsvp_confirmed_count', { confirmedCount, declinedCount, cardsCount }, 'meta');
-  await sendRsvpConfirmed(phoneNumber);
+  const confirmSend = await sendRsvpConfirmed(phoneNumber);
+  await logWebhookEvent('rsvp_confirmed_count_template_sent', { phoneNumber, guestId: guest.id, result: confirmSend });
 }
+
 
 async function processStatus(status) {
   const messageId = status.id;

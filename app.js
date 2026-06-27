@@ -126,6 +126,56 @@ const db={
  get messages(){return JSON.parse(localStorage.getItem('dawaa_messages')||'[]')}, set messages(v){localStorage.setItem('dawaa_messages',JSON.stringify(v))},
 };
 
+// Sync WhatsApp RSVP updates from Supabase into this static design app.
+// The design stores guests in localStorage, while Meta webhook updates Supabase on the server.
+// This keeps the visible dashboard status updated after a guest clicks WhatsApp buttons.
+async function syncGuestStatusesFromServer(silent=true){
+  try{
+    const res = await fetch('/api/guests-sync', {cache:'no-store'});
+    if(!res.ok) return false;
+    const data = await res.json();
+    if(!data.success || !Array.isArray(data.guests)) return false;
+    const byPhone = new Map();
+    data.guests.forEach(g=>{
+      const phone = String(g.phoneNumber || '').replace(/\D/g,'');
+      if(phone) byPhone.set(phone, g);
+    });
+    let changed = false;
+    const next = db.guests.map(local=>{
+      const phone = String(local.phoneNumber || '').replace(/\D/g,'');
+      const remote = byPhone.get(phone) || (phone.startsWith('968') ? byPhone.get(phone.slice(3)) : byPhone.get('968'+phone));
+      if(!remote) return local;
+      const merged = {
+        ...local,
+        rsvpStatus: remote.rsvpStatus || local.rsvpStatus,
+        confirmedCount: Number(remote.confirmedCount ?? local.confirmedCount ?? 0),
+        declinedCount: Number(remote.declinedCount ?? local.declinedCount ?? 0),
+        pendingCount: Number(remote.pendingCount ?? local.pendingCount ?? local.cardsCount ?? 1),
+        invitationSentAt: remote.invitationSentAt || local.invitationSentAt,
+        deliveredAt: remote.deliveredAt || local.deliveredAt,
+        readAt: remote.readAt || local.readAt,
+        repliedAt: remote.repliedAt || local.repliedAt,
+        metaMessageId: remote.metaMessageId || local.metaMessageId,
+        dbGuestId: remote.id || local.dbGuestId
+      };
+      if(JSON.stringify(merged)!==JSON.stringify(local)) changed = true;
+      return merged;
+    });
+    if(changed){
+      db.guests = next;
+      if(!silent) showToast('تم تحديث حالات الضيوف من WhatsApp');
+      // Re-render only admin/client pages so landing page remains untouched.
+      if(location.hash.includes('/admin') || location.hash.includes('/client')) render();
+    }
+    return changed;
+  }catch(e){
+    console.warn('[DAWAA] guests sync failed', e);
+    return false;
+  }
+}
+setInterval(()=>syncGuestStatusesFromServer(true), 10000);
+window.syncGuestStatusesFromServer = syncGuestStatusesFromServer;
+
 function safeArray(key){try{const v=JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(v)?v:[]}catch(e){return []}}
 function ensureDataIntegrity(){
   const defaultBookings=[{id:'ev1',clientName:'سارة محمد',clientPhone:'96891234567',eventName:'زفاف سارة و محمد',eventType:'زفاف',eventDate:'2026-10-15',venueName:'قاعة المرجان - مسقط',locationLink:'https://maps.google.com',receptionTime:'8:00 مساءً',hostOne:'أم محمد',hostTwo:'أم سارة',brideName:'سارة',groomName:'محمد',status:'active',health:92,createdAt:now(),screenUploaded:false,cardsReady:true,clientAccount:'client@dawaa.local'},{id:'ev2',clientName:'مريم البلوشي',clientPhone:'96892345678',eventName:'خطوبة مريم',eventType:'خطوبة',eventDate:'2026-11-04',venueName:'فندق كراون بلازا',locationLink:'',receptionTime:'7:30 مساءً',hostOne:'',hostTwo:'',brideName:'مريم',groomName:'خالد',status:'planning',health:67,createdAt:now(),screenUploaded:false,cardsReady:false,clientAccount:'mariam@dawaa.local'}];

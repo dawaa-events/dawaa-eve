@@ -1,7 +1,7 @@
 const { defaultTemplateName, sendApiToken } = require('./_lib/config');
 const { normalizePhone } = require('./_lib/phone');
 const { sendWeddingInvitation } = require('./_lib/meta');
-const { updateGuest, insertMessage, logTimeline } = require('./_lib/supabase');
+const { ensureGuestExists, updateGuest, updateGuestByPhone, insertMessage, logTimeline } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -57,9 +57,21 @@ module.exports = async function handler(req, res) {
       }
 
       const sentAt = new Date().toISOString();
+
+      // IMPORTANT: The frontend design stores guests locally with ids like g1/g2.
+      // Supabase guests.id is UUID, so the webhook could not find/update those local guests.
+      // We create/reuse a Supabase guest row by phone BEFORE sending, then store Meta message id there.
+      let dbGuest = null;
+      try {
+        dbGuest = await ensureGuestExists(guest, booking);
+      } catch (dbErr) {
+        console.error('[send-invitations] ensureGuestExists failed', dbErr);
+      }
+
       const result = await sendWeddingInvitation(payload);
       const row = {
         guestId: guest.id,
+        dbGuestId: dbGuest?.id || null,
         phoneNumber,
         status: result.status,
         messageId: result.messageId || '',
@@ -67,23 +79,23 @@ module.exports = async function handler(req, res) {
       };
       results.push(row);
 
-      if (guest.id) {
-        try {
-          await updateGuest(guest.id, {
-            rsvpStatus: result.status === 'sent' ? 'sent' : 'failed',
-            pendingCount: cardsCount,
-            invitationSentAt: result.status === 'sent' ? sentAt : null,
-            metaMessageId: result.messageId || null,
-            notes: result.error || guest.notes || null
-          });
-        } catch (dbErr) {
-          row.dbWarning = String(dbErr.message || dbErr);
-        }
+      try {
+        const update = {
+          rsvpStatus: result.status === 'sent' ? 'sent' : 'failed',
+          pendingCount: cardsCount,
+          invitationSentAt: result.status === 'sent' ? sentAt : null,
+          metaMessageId: result.messageId || null,
+          notes: result.error || guest.notes || null
+        };
+        if (dbGuest?.id) await updateGuest(dbGuest.id, update);
+        else await updateGuestByPhone(phoneNumber, update);
+      } catch (dbErr) {
+        row.dbWarning = String(dbErr.message || dbErr);
       }
 
       await insertMessage({
-        bookingId: guest.bookingId || booking.id || body.bookingId,
-        guestId: guest.id,
+        bookingId: dbGuest?.bookingId || guest.bookingId || booking.id || body.bookingId,
+        guestId: dbGuest?.id || guest.id,
         phoneNumber,
         direction: 'outbound',
         messageType: 'template',
@@ -91,7 +103,7 @@ module.exports = async function handler(req, res) {
         metaMessageId: result.messageId || null,
         status: result.status
       });
-      await logTimeline({ id: guest.id, bookingId: guest.bookingId || booking.id || body.bookingId }, 'invitation_sent', row, 'meta');
+      await logTimeline({ id: dbGuest?.id || guest.id, bookingId: dbGuest?.bookingId || guest.bookingId || booking.id || body.bookingId }, 'invitation_sent', row, 'meta');
     }
 
     const sent = results.filter(r => r.status === 'sent').length;

@@ -1,4 +1,5 @@
 const { supabaseUrl, supabaseServiceRoleKey } = require('./config');
+const { normalizePhone } = require('./phone');
 
 function isConfigured() {
   return Boolean(supabaseUrl && supabaseServiceRoleKey);
@@ -37,12 +38,16 @@ function eq(value) {
   return encodeURIComponent(String(value));
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
 function toDbGuestUpdate(update) {
   const out = {};
   if ('rsvpStatus' in update) out.rsvp_status = update.rsvpStatus;
-  if ('confirmedCount' in update) out.confirmed_count = update.confirmedCount;
-  if ('declinedCount' in update) out.declined_count = update.declinedCount;
-  if ('pendingCount' in update) out.pending_count = update.pendingCount;
+  if ('confirmedCount' in update) out.confirmed_count = Number(update.confirmedCount || 0);
+  if ('declinedCount' in update) out.declined_count = Number(update.declinedCount || 0);
+  if ('pendingCount' in update) out.pending_count = Number(update.pendingCount || 0);
   if ('invitationSentAt' in update) out.invitation_sent_at = update.invitationSentAt;
   if ('deliveredAt' in update) out.delivered_at = update.deliveredAt;
   if ('readAt' in update) out.read_at = update.readAt;
@@ -53,6 +58,29 @@ function toDbGuestUpdate(update) {
   return out;
 }
 
+function toDbGuestInsert(guest = {}, booking = {}) {
+  const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
+  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
+  const payload = {
+    guest_name: guest.guestName || guest.guest_name || guest.name || '-',
+    phone_number: phoneNumber,
+    cards_count: cardsCount,
+    rsvp_status: guest.rsvpStatus || guest.rsvp_status || 'pending',
+    confirmed_count: Number(guest.confirmedCount || guest.confirmed_count || 0),
+    declined_count: Number(guest.declinedCount || guest.declined_count || 0),
+    pending_count: Number(guest.pendingCount || guest.pending_count || cardsCount),
+    short_code: guest.shortCode || guest.short_code || null,
+    notes: guest.notes || null,
+    updated_at: new Date().toISOString()
+  };
+
+  // Do not send non-UUID local ids such as ev1/g1 into uuid columns.
+  const bookingId = guest.bookingId || guest.booking_id || booking.id || booking.bookingId;
+  if (isUuid(bookingId)) payload.booking_id = bookingId;
+
+  return payload;
+}
+
 function fromDbGuest(row) {
   if (!row) return null;
   return {
@@ -61,37 +89,27 @@ function fromDbGuest(row) {
     guestName: row.guest_name || row.name,
     phoneNumber: row.phone_number || row.phone,
     cardsCount: row.cards_count || row.cards || 1,
-    rsvpStatus: row.rsvp_status || 'pending',
+    rsvpStatus: row.rsvp_status || row.status || 'pending',
     confirmedCount: row.confirmed_count || 0,
     declinedCount: row.declined_count || 0,
-    pendingCount: row.pending_count || row.cards_count || 1,
+    pendingCount: row.pending_count ?? row.cards_count ?? 1,
     metaMessageId: row.meta_message_id,
     invitationSentAt: row.invitation_sent_at,
     deliveredAt: row.delivered_at,
     readAt: row.read_at,
     repliedAt: row.replied_at,
-    shortCode: row.short_code
+    shortCode: row.short_code,
+    notes: row.notes
   };
 }
 
 function getSupabaseAdmin() {
-  // Compatibility placeholder: this project uses Supabase REST directly to avoid npm install on Vercel.
   return isConfigured() ? { rest: true } : null;
-}
-
-async function updateGuest(id, update) {
-  if (!isConfigured() || !id) return null;
-  const data = await request(`/guests?id=eq.${eq(id)}&select=*`, {
-    method: 'PATCH',
-    headers: { Prefer: 'return=representation' },
-    body: JSON.stringify(toDbGuestUpdate(update))
-  });
-  return fromDbGuest(Array.isArray(data) ? data[0] : data);
 }
 
 function phoneVariants(phoneNumber) {
   const raw = String(phoneNumber || '').trim();
-  const digits = raw.replace(/\D/g, '');
+  const digits = normalizePhone(raw);
   const variants = new Set([raw, digits]);
   if (digits.startsWith('00')) variants.add(digits.slice(2));
   if (digits.startsWith('968') && digits.length > 8) variants.add(digits.slice(3));
@@ -103,15 +121,11 @@ function phoneVariants(phoneNumber) {
 async function getGuestByPhone(phoneNumber) {
   if (!isConfigured() || !phoneNumber) return null;
   const variants = phoneVariants(phoneNumber);
-
-  // Try exact lookup across the common phone column names and formats.
-  // Prefer pending/sent/delivered/read guests so old events do not catch a new RSVP.
   const orParts = [];
   for (const v of variants) {
     orParts.push(`phone_number.eq.${eq(v)}`);
     orParts.push(`phone.eq.${eq(v)}`);
   }
-
   const path = `/guests?or=(${orParts.join(',')})&select=*&order=created_at.desc&limit=20`;
   const data = await request(path);
   const rows = Array.isArray(data) ? data : (data ? [data] : []);
@@ -125,11 +139,71 @@ async function getGuestByMetaMessageId(messageId) {
   return fromDbGuest(Array.isArray(data) ? data[0] : data);
 }
 
+async function updateGuest(id, update) {
+  if (!isConfigured() || !id) return null;
+  if (!isUuid(id)) {
+    console.warn('[Supabase] Skipping updateGuest for non-UUID id:', id);
+    return null;
+  }
+  const data = await request(`/guests?id=eq.${eq(id)}&select=*`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(toDbGuestUpdate(update))
+  });
+  return fromDbGuest(Array.isArray(data) ? data[0] : data);
+}
+
+async function updateGuestByPhone(phoneNumber, update) {
+  const guest = await getGuestByPhone(phoneNumber);
+  if (!guest?.id) return null;
+  return updateGuest(guest.id, update);
+}
+
+async function ensureGuestExists(guest = {}, booking = {}) {
+  if (!isConfigured()) return null;
+  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
+  if (!phoneNumber) return null;
+
+  // 1) If frontend supplied a real UUID, update that row.
+  if (isUuid(guest.id)) {
+    const updated = await updateGuest(guest.id, {
+      pendingCount: Number(guest.cardsCount || guest.cards_count || guest.cards || 1),
+      rsvpStatus: guest.rsvpStatus || 'pending'
+    });
+    if (updated) return updated;
+  }
+
+  // 2) Reuse row by phone.
+  const existing = await getGuestByPhone(phoneNumber);
+  if (existing?.id) {
+    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || existing.cardsCount || 1);
+    return updateGuest(existing.id, {
+      pendingCount: cardsCount,
+      notes: guest.notes || existing.notes || null
+    }) || existing;
+  }
+
+  // 3) Insert new guest into Supabase so the WhatsApp webhook can find it later.
+  const payload = toDbGuestInsert({ ...guest, phoneNumber }, booking);
+  const data = await request('/guests?select=*', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(payload)
+  });
+  return fromDbGuest(Array.isArray(data) ? data[0] : data);
+}
+
+async function listGuests(limit = 1000) {
+  if (!isConfigured()) return [];
+  const data = await request(`/guests?select=*&order=updated_at.desc&limit=${Number(limit) || 1000}`);
+  return (Array.isArray(data) ? data : []).map(fromDbGuest).filter(Boolean);
+}
+
 async function insertMessage(message) {
   if (!isConfigured()) return null;
   const payload = {
-    booking_id: message.bookingId || null,
-    guest_id: message.guestId || null,
+    booking_id: isUuid(message.bookingId) ? message.bookingId : null,
+    guest_id: isUuid(message.guestId) ? message.guestId : null,
     phone_number: message.phoneNumber || null,
     direction: message.direction || 'system',
     message_type: message.messageType || 'text',
@@ -150,14 +224,14 @@ async function insertMessage(message) {
 }
 
 async function logTimeline(guest, eventType, eventData = {}, source = 'meta') {
-  if (!isConfigured() || !guest?.id) return null;
+  if (!isConfigured() || !isUuid(guest?.id)) return null;
   try {
     return await request('/guest_timeline_events', {
       method: 'POST',
       headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({
         guest_id: guest.id,
-        booking_id: guest.bookingId || null,
+        booking_id: isUuid(guest.bookingId) ? guest.bookingId : null,
         event_type: eventType,
         event_data: eventData,
         source,
@@ -188,9 +262,13 @@ async function logWebhookEvent(eventType, payload) {
 module.exports = {
   getSupabaseAdmin,
   updateGuest,
+  updateGuestByPhone,
+  ensureGuestExists,
+  listGuests,
   getGuestByPhone,
   getGuestByMetaMessageId,
   insertMessage,
   logTimeline,
-  logWebhookEvent
+  logWebhookEvent,
+  isUuid
 };
