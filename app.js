@@ -976,6 +976,41 @@ function adminClients(){
  adminShell(`<div class="section-title-row"><div><span class="eyebrow">العملاء</span><h1>إدارة العملاء</h1><p class="muted">هذه الصفحة مخصصة للعملاء والحجوزات فقط، منفصلة عن صفحة الضيوف.</p></div><button class="btn btn-primary" onclick="openEventModal()">إضافة عميل / مناسبة</button></div><div class="guest-card-grid">${bookings.map(b=>{const s=statsFor(b.id);return `<article class="guest-mini-card" onclick="openEventWorkspace('${b.id}')"><div class="guest-avatar">${escapeHtml((b.clientName||'ع')[0])}</div><div class="guest-info"><h3>${escapeHtml(b.clientName||'عميل')}</h3><p>${b.clientPhone||''} • ${b.eventName}</p><small>${fmt(b.eventDate)} • ${b.venueName||'بدون قاعة'}</small></div><div class="guest-actions"><span class="badge b-purple">${s.total} ضيف</span><button class="btn btn-secondary" onclick="event.stopPropagation();openEventWorkspace('${b.id}')">إدارة</button></div></article>`}).join('')}</div>`, 'clients')
 }
 
+
+
+
+
+
+
+const WHATSAPP_TEMPLATES = [
+  {id:'dawaa_wedding_invitation', title:'دعوة بدون صورة', icon:'💬', desc:'رسالة الدعوة الأساسية مع أزرار الحضور والاعتذار', needsImage:false, type:'invitation'},
+  {id:'dawaa_wedding_invitation_image', title:'دعوة مع صورة', icon:'🖼️', desc:'صورة الدعوة + نص الدعوة + أزرار الحضور والاعتذار', needsImage:true, type:'invitation'},
+  {id:'dawaa_entry_card', title:'بطاقة الدخول', icon:'🎫', desc:'إرسال بطاقة الدخول أو QR بعد التأكيد', needsImage:true, type:'entry'},
+  {id:'dawaa_rsvp_reminder', title:'رسالة تذكير', icon:'⏰', desc:'تذكير للضيوف الذين لم يردوا', needsImage:false, type:'reminder'},
+  {id:'dawaa_rsvp_confirmed', title:'تأكيد الحضور', icon:'✅', desc:'رسالة تأكيد بعد تسجيل الحضور', needsImage:false, type:'system'},
+  {id:'dawaa_rsvp_declined', title:'رسالة الاعتذار', icon:'❌', desc:'رسالة بعد اعتذار الضيف عن الحضور', needsImage:false, type:'system'}
+];
+function getSelectedTemplate(b){
+ return b?.whatsappTemplate || b?.templateName || 'dawaa_wedding_invitation';
+}
+function whatsappTemplateCards(b){
+ const selected=getSelectedTemplate(b||{});
+ return `<div class="template-card-grid">${WHATSAPP_TEMPLATES.map(t=>`<button type="button" class="template-choice-card ${selected===t.id?'active':''}" onclick="selectWhatsappTemplate('${b?.id||''}','${t.id}')">
+   <span class="template-icon">${t.icon}</span>
+   <b>${t.title}</b>
+   <small>${t.desc}</small>
+   <em>${t.id}</em>
+ </button>`).join('')}</div>`;
+}
+function selectWhatsappTemplate(bookingId, templateId){
+ const b=db.bookings.find(x=>x.id===bookingId)||db.bookings.find(x=>x.id===getSelectedBookingId());
+ if(!b) return showToast('اختاري مناسبة أولاً');
+ b.whatsappTemplate=templateId;
+ if(!WHATSAPP_TEMPLATES.find(t=>t.id===templateId)?.needsImage) b.invitationImageUrl='';
+ db.bookings=db.bookings.map(x=>x.id===b.id?b:x);
+ showToast('تم اختيار القالب');
+ render();
+}
 function getTemplateVars(b){
  return {
   guest_name:'اسم الضيف',
@@ -988,23 +1023,51 @@ function getTemplateVars(b){
  };
 }
 function metaTemplatePanel(b){
+ const selected=getSelectedTemplate(b||{});
+ const selectedTemplate=WHATSAPP_TEMPLATES.find(t=>t.id===selected)||WHATSAPP_TEMPLATES[0];
  const v=getTemplateVars(b||{});
  return `<section class="panel meta-template-panel">
-  <div class="section-title-row"><div><h2>متغيرات قالب Meta</h2><p class="muted">هذه القيم تستخدم في رسالة الدعوة. اسم الضيف وعدد البطاقات يتم سحبهم من كل ضيف تلقائياً.</p></div></div>
+  <div class="section-title-row"><div><h2>قالب WhatsApp</h2><p class="muted">اختاري نوع الرسالة قبل الإرسال. الحقول المطلوبة تتغير حسب القالب.</p></div></div>
+  ${whatsappTemplateCards(b)}
+  <div class="selected-template-summary">
+    <b>القالب المختار:</b>
+    <span>${selectedTemplate.icon} ${selectedTemplate.title}</span>
+    <code>${selectedTemplate.id}</code>
+  </div>
+
+  <div class="section-title-row mini"><div><h2>متغيرات قالب Meta</h2><p class="muted">اسم الضيف وعدد البطاقات يتم سحبهم تلقائياً من كل ضيف.</p></div></div>
   <div class="template-var-grid">
     <div class="field"><label>صاحبة الدعوة الأولى {{host_one}}</label><input id="tplHostOne" value="${escapeHtml(v.host_one)}" placeholder="مثال: أم العروس"></div>
     <div class="field"><label>صاحبة الدعوة الثانية {{host_two}}</label><input id="tplHostTwo" value="${escapeHtml(v.host_two)}" placeholder="مثال: أم المعرس"></div>
     <div class="field"><label>اسم العروس {{bride_name}}</label><input id="tplBride" value="${escapeHtml(v.bride_name)}" placeholder="اسم العروس"></div>
     <div class="field"><label>اسم المعرس {{groom_name}}</label><input id="tplGroom" value="${escapeHtml(v.groom_name)}" placeholder="اسم المعرس"></div>
-    <div class="field full"><label>رابط صورة الدعوة للقالب المصور</label><input id="tplImageUrl" value="${escapeHtml(v.invitation_image_url)}" placeholder="https://.../invitation.jpg"></div>
+    ${selectedTemplate.needsImage?`<div class="field full"><label>رابط صورة الدعوة / المرفق</label><input id="tplImageUrl" value="${escapeHtml(v.invitation_image_url)}" placeholder="https://.../invitation.jpg"></div>`:`<input id="tplImageUrl" type="hidden" value="">`}
   </div>
   <div class="template-preview">
-    <b>المتغيرات الثابتة:</b>
+    <b>المتغيرات التلقائية:</b>
     <span>{{guest_name}} = اسم كل ضيف</span>
     <span>{{cards_count}} = عدد بطاقات كل ضيف</span>
+    ${selectedTemplate.needsImage?`<span class="need-image">هذا القالب يحتاج رابط صورة عام</span>`:`<span>هذا القالب لا يحتاج صورة</span>`}
   </div>
-  <button class="btn btn-primary" onclick="saveMetaTemplateVars('${b?.id||''}')">حفظ متغيرات القالب</button>
+  ${messagePreviewBox(b, selectedTemplate)}
+  <button class="btn btn-primary" onclick="saveMetaTemplateVars('${b?.id||''}')">حفظ إعدادات القالب</button>
  </section>`;
+}
+function messagePreviewBox(b, t){
+ const image=(b?.invitationImageUrl||'').trim();
+ return `<div class="whatsapp-preview-box">
+  <div class="wa-head"><b>Dawaa Events</b><small>online</small></div>
+  <div class="wa-body">
+    ${t.needsImage && image?`<img src="${escapeHtml(image)}" alt="صورة الدعوة">`:t.needsImage?`<div class="wa-image-empty">ضعي رابط الصورة حتى تظهر هنا</div>`:''}
+    <div class="wa-bubble">
+      <b>دعوة زفاف</b>
+      <p>الفاضلة / {{guest_name}}</p>
+      <p>تتشرف ${escapeHtml(b?.hostOne||'صاحبة الدعوة الأولى')} و ${escapeHtml(b?.hostTwo||'صاحبة الدعوة الثانية')} بدعوتكم لحضور حفل زفاف ${escapeHtml(b?.brideName||'العروس')} و ${escapeHtml(b?.groomName||'المعرس')}</p>
+      <p>عدد بطاقات الدخول المخصصة لكم: {{cards_count}}</p>
+    </div>
+    <div class="wa-buttons"><span>أرغب في الحضور</span><span>أعتذر عن الحضور</span></div>
+  </div>
+ </div>`;
 }
 function saveMetaTemplateVars(bookingId){
  const b=db.bookings.find(x=>x.id===bookingId)||db.bookings.find(x=>x.id===getSelectedBookingId());
@@ -1014,20 +1077,21 @@ function saveMetaTemplateVars(bookingId){
  b.brideName=$('#tplBride')?.value||'';
  b.groomName=$('#tplGroom')?.value||'';
  b.invitationImageUrl=$('#tplImageUrl')?.value||'';
+ if(!b.whatsappTemplate) b.whatsappTemplate='dawaa_wedding_invitation';
  db.bookings=db.bookings.map(x=>x.id===b.id?b:x);
- showToast('تم حفظ متغيرات قالب Meta');
+ showToast('تم حفظ إعدادات قالب WhatsApp');
  render();
 }
 function attachImageGuide(){
  return `<section class="panel image-guide">
   <h2>إرفاق صورة مع الدعوة</h2>
   <ol>
-    <li>ارفعي صورة الدعوة على رابط مباشر عام مثل Supabase Storage أو Vercel/Public أو Cloudinary.</li>
-    <li>استخدمي قالب Meta المصور <b>dawaa_wedding_invitation_image</b> المعتمد.</li>
-    <li>ضعي رابط الصورة في خانة "رابط صورة الدعوة" أعلاه.</li>
-    <li>لازم يكون الرابط يفتح الصورة مباشرة بدون تسجيل دخول.</li>
+    <li>اختاري قالب <b>دعوة مع صورة</b>.</li>
+    <li>ارفعي صورة الدعوة على رابط مباشر عام مثل Supabase Storage.</li>
+    <li>ضعي رابط الصورة في خانة "رابط صورة الدعوة".</li>
+    <li>افتحي الرابط في نافذة خاصة للتأكد أنه يفتح بدون تسجيل دخول.</li>
   </ol>
-  <p class="muted">إذا القالب المستخدم بدون صورة، لا تضعي رابط صورة حتى لا يرفض Meta الإرسال.</p>
+  <p class="muted">إذا اخترتِ قالب بدون صورة، لا يرسل النظام أي Header Image حتى لا يرفض Meta الإرسال.</p>
  </section>`;
 }
 
@@ -1052,7 +1116,7 @@ async function apiSendGuests(guestList, label='الدعوات'){
   const res=await fetch('/api/send-invitations',{
    method:'POST',
    headers:{'Content-Type':'application/json', ...(localStorage.getItem('dawaa_send_token')?{'x-dawaa-send-token':localStorage.getItem('dawaa_send_token')}: {})},
-   body:JSON.stringify({bookingId:booking.id, booking, guests:guestList, invitationImageUrl:booking.invitationImageUrl||''})
+   body:JSON.stringify({bookingId:booking.id, booking, guests:guestList, template:booking.whatsappTemplate||'dawaa_wedding_invitation', invitationImageUrl:booking.invitationImageUrl||''})
   });
   const data=await res.json();
   if(!res.ok) throw new Error(data.message || data.error || 'فشل الإرسال');
