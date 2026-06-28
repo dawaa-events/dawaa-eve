@@ -107,10 +107,12 @@ function countdownInfo(b){
 }
 function countdownWidget(b, compact=false){
   const c = countdownInfo(b);
-  return `<div class="event-countdown ${compact?'compact':''} ${c.cls}">
+  const target = b?.eventDate ? new Date(b.eventDate).getTime() : 0;
+  return `<div class="event-countdown ${compact?'compact':''} ${c.cls}" data-countdown-target="${target}">
     <div class="count-main">
       <span>العد التنازلي للمناسبة</span>
       <b>${escapeHtml(c.eventLabel)}</b>
+      <small class="live-countdown">جارٍ حساب الوقت المتبقي...</small>
     </div>
     <div class="count-next">
       <span>الخطوة القادمة</span>
@@ -119,6 +121,92 @@ function countdownWidget(b, compact=false){
     </div>
   </div>`;
 }
+function formatLiveCountdown(ms){
+  if(!ms || ms < 0) return 'انتهت المناسبة';
+  const s=Math.floor(ms/1000);
+  const d=Math.floor(s/86400);
+  const h=Math.floor((s%86400)/3600);
+  const m=Math.floor((s%3600)/60);
+  const sec=s%60;
+  return `${d} يوم • ${h} ساعة • ${m} دقيقة • ${sec} ثانية`;
+}
+function updateLiveCountdowns(){
+  document.querySelectorAll('[data-countdown-target]').forEach(el=>{
+    const target=Number(el.getAttribute('data-countdown-target')||0);
+    const small=el.querySelector('.live-countdown');
+    if(small && target) small.textContent=formatLiveCountdown(target-Date.now());
+  });
+}
+function currentUpdateTime(){return new Date().toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'});}
+function getBookingSettings(bookingId){
+  const all=JSON.parse(localStorage.getItem('dawaa_booking_settings')||'{}');
+  return {allowClientAdd:false, allowClientEdit:false, allowClientDelete:false, allowBackupList:false, clientCardLimit:0, ...(all[bookingId]||{})};
+}
+function saveBookingSettings(bookingId, settings){
+  const all=JSON.parse(localStorage.getItem('dawaa_booking_settings')||'{}');
+  all[bookingId]={...getBookingSettings(bookingId), ...settings};
+  localStorage.setItem('dawaa_booking_settings', JSON.stringify(all));
+}
+function usedClientCards(bookingId){
+  return db.guests.filter(g=>g.bookingId===bookingId && g.source==='client').reduce((a,g)=>a+Number(g.cardsCount||1),0);
+}
+function listCategoryValue(){
+  const checked=document.querySelector('.list-category-bar input[name="listCategory"]:checked');
+  return checked?.value || localStorage.getItem('dawaa_last_list_category') || 'bride';
+}
+function listCategoryBar(){
+  const saved=localStorage.getItem('dawaa_last_list_category') || 'bride';
+  const opts=[['bride','قائمة العروس'],['groom','قائمة المعرس'],['edited','قائمة معدلة'],['backup','قائمة احتياط']];
+  return `${listCategoryBar()}`;
+}
+function listCategoryLabel(v){
+  return ({bride:'قائمة العروس',groom:'قائمة المعرس',edited:'قائمة معدلة',backup:'قائمة احتياط'})[v||'bride']||'قائمة العروس';
+}
+
+function permissionsPanel(b){
+ const st=getBookingSettings(b.id);
+ return `<section class="panel permissions-panel">
+  <div class="section-title-row"><div><h2>صلاحيات العميل</h2><p class="muted">تتحكم الإدارة بإضافة وتعديل الضيوف وحد البطاقات للعميل.</p></div></div>
+  <div class="permission-grid">
+    <label><input type="checkbox" ${st.allowClientAdd?'checked':''} onchange="saveBookingSettings('${b.id}',{allowClientAdd:this.checked});showToast('تم تحديث الصلاحيات')"> يسمح بإضافة ضيوف</label>
+    <label><input type="checkbox" ${st.allowClientEdit?'checked':''} onchange="saveBookingSettings('${b.id}',{allowClientEdit:this.checked});showToast('تم تحديث الصلاحيات')"> يسمح بالتعديل</label>
+    <label><input type="checkbox" ${st.allowClientDelete?'checked':''} onchange="saveBookingSettings('${b.id}',{allowClientDelete:this.checked});showToast('تم تحديث الصلاحيات')"> يسمح بالحذف</label>
+    <label><input type="checkbox" ${st.allowBackupList?'checked':''} onchange="saveBookingSettings('${b.id}',{allowBackupList:this.checked});showToast('تم تحديث الصلاحيات')"> يسمح بقائمة الاحتياط</label>
+  </div>
+  <div class="field"><label>حد العميل حسب عدد البطاقات</label><input type="number" value="${Number(st.clientCardLimit||0)}" onchange="saveBookingSettings('${b.id}',{clientCardLimit:Number(this.value||0)});showToast('تم حفظ الحد')"></div>
+  <small>المستخدم حالياً: ${usedClientCards(b.id)} / ${Number(st.clientCardLimit||0) || 'غير محدود'} بطاقة.</small>
+ </section>`;
+}
+
+function openGuestPage(id){go('/admin/guest-details/'+id)}
+function adminGuestDetails(id){
+ const g=db.guests.find(x=>x.id===id);
+ if(!g) return adminGuests();
+ const b=db.bookings.find(x=>x.id===g.bookingId);
+ adminShell(`<div class="guest-detail-page">
+  <div class="calm-hero-card">
+    <div>
+      <span class="eyebrow">ملف الضيف</span>
+      <h1>${escapeHtml(g.guestName)}</h1>
+      <p>${escapeHtml(g.phoneNumber)} • ${Number(g.cardsCount||1)} بطاقات • ${escapeHtml(b?.eventName||'')}</p>
+    </div>
+    <div class="calm-hero-actions">
+      <button class="btn btn-primary" onclick="sendOne('${g.id}')">إرسال</button>
+      <button class="btn btn-secondary" onclick="editGuest('${g.id}')">تعديل</button>
+      <button class="btn btn-ghost" onclick="go('/admin/guests')">رجوع</button>
+    </div>
+  </div>
+  <section class="panel">${cardStatusChip(g)}</section>
+  <section class="panel"><h2>Timeline الإرسال</h2><div class="proof-timeline horizontal-proof">
+    <div class="tl"><span class="dot"></span> تم إنشاء سجل الضيف</div>
+    <div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'لم تُرسل الدعوة بعد'}</div>
+    <div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'لم يؤكد التسليم'}</div>
+    <div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم تُقرأ بعد'}</div>
+    <div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'لم تؤكد البطاقات'}</div>
+  </div></section>
+ </div>`, 'guests');
+}
+
 const uid = () => Math.random().toString(36).slice(2,10);
 let currentUser = JSON.parse(localStorage.getItem('dawaa_user')||'null');
 let cmdOpen = false;
@@ -511,12 +599,12 @@ async function login(){const email=$('#email').value.trim(); const pass=$('#pass
 function ensure(role){if(!currentUser){go('/login');return false} if(role && currentUser.role!==role){showToast('ليس لديك صلاحية لهذه الصفحة');go('/login');return false} return true}
 function logout(){localStorage.removeItem('dawaa_user');currentUser=null;go('/')}
 function adminShell(content,active='dashboard'){app.innerHTML=`<div class="app-shell command-admin"><aside class="side" id="side"><div class="brand"><div class="logo-mark"><img src="assets/dawaa-logo-purple.png" alt="شعار دعوة"></div><span>دعوة</span></div><div class="side-caption">غرفة عمليات المناسبات</div><div class="side-menu">${[['dashboard','الرئيسية','home','dashboard'],['operations','المناسبات','calendar-days','operations'],['guests','الضيوف','users','guests'],['clients','العملاء','user-round','clients'],['accounts','الحسابات','user-cog','accounts'],['send','الإرسال','send','send'],['messages','الرسائل','message-circle','messages'],['ratings','تقييم الزوار','star','ratings'],['reports','التقارير','bar-chart-3','reports'],['packages','الباقات','badge-dollar-sign','packages'],['integrations','التكاملات','plug-zap','integrations'],['settings','الإعدادات','settings','settings']].map(x=>`<div class="side-link ${active===x[0]?'active':''}" onclick="go('/admin/${x[3]}')">${icon(x[2],20)} ${x[1]}</div>`).join('')}<div class="side-divider"></div><div class="side-link" onclick="toggleCommand(true)">${icon('search',20)} البحث السريع</div><div class="side-link" onclick="logout()">${icon('log-out',20)} خروج</div></div></aside><main class="main"><div class="topbar admin-topbar"><button class="btn btn-secondary mobile-toggle" onclick="$('#side').classList.toggle('open')">${icon('menu',20)}</button><button class="search command-search" onclick="toggleCommand(true)">ابحثي عن مناسبة، ضيف، رقم، أو نفذي أمر… <b>Ctrl K</b></button><div class="quick-actions"><button class="btn btn-secondary" onclick="openGuestModal()">ضيف جديد</button><button class="btn btn-primary" onclick="openEventModal()">مناسبة جديدة</button></div></div><div class="route-page">${content}</div></main></div>${eventModal()}${guestModal()}${commandPalette()}<div class="drawer wide-drawer" id="drawer"></div>`; afterRender();}
-function renderAdmin(route){if(!ensure('admin'))return; const page=route.split('/')[2]||'dashboard'; if(page==='dashboard') return adminDashboard(); if(page==='operations') return adminOperations(); if(page==='workspace') return adminWorkspace(); if(page==='events') return adminOperations(); if(page==='guests') return adminGuests(); if(page==='clients') return adminClients(); if(page==='accounts') return adminAccounts(); if(page==='send') return adminSend(); if(page==='messages') return adminMessages(); if(page==='ratings') return adminRatings(); if(page==='recovery') return adminRecovery(); if(page==='reports') return adminReports(); if(page==='status') return adminStatus(); if(page==='packages') return adminPackages(); if(page==='integrations') return adminIntegrations(); if(page==='settings') return adminSettings(); adminDashboard();}
+function renderAdmin(route){if(!ensure('admin'))return; const page=route.split('/')[2]||'dashboard'; const id=route.split('/')[3]||''; if(page==='dashboard') return adminDashboard(); if(page==='operations') return adminOperations(); if(page==='workspace') return adminWorkspace(); if(page==='events') return adminOperations(); if(page==='guests') return adminGuests(); if(page==='guest-details') return adminGuestDetails(id); if(page==='clients') return adminClients(); if(page==='accounts') return adminAccounts(); if(page==='send') return adminSend(); if(page==='messages') return adminMessages(); if(page==='ratings') return adminRatings(); if(page==='recovery') return adminRecovery(); if(page==='reports') return adminReports(); if(page==='status') return adminStatus(); if(page==='packages') return adminPackages(); if(page==='integrations') return adminIntegrations(); if(page==='settings') return adminSettings(); adminDashboard();}
 function statsFor(bookingId){const gs=db.guests.filter(g=>!bookingId||g.bookingId===bookingId); const totalCards=gs.reduce((a,g)=>a+Number(g.cardsCount||1),0); const confirmedCards=gs.reduce((a,g)=>a+Number(g.confirmedCount||0),0); const declinedCards=gs.reduce((a,g)=>a+Number(g.declinedCount||0),0); const pendingCards=Math.max(0,totalCards-confirmedCards-declinedCards); return {total:totalCards,totalPeople:gs.length,totalCards,pending:pendingCards,confirmed:confirmedCards,declined:declinedCards,sent:gs.filter(g=>['sent','delivered','read'].includes(g.rsvpStatus)).reduce((a,g)=>a+Number(g.pendingCount||g.cardsCount||1),0),failed:gs.filter(g=>g.rsvpStatus==='failed').reduce((a,g)=>a+Number(g.cardsCount||1),0),confirmedCards,declinedCards,pendingCards}}
 function adminDashboard(){const bookings=db.bookings; const s=statsFor(); const today=bookings.filter(b=>new Date(b.eventDate).toDateString()===new Date().toDateString()).length; const needs=bookings.filter(b=>(b.health||0)<85).length; adminShell(`<div class="ops-hero"><div><span class="eyebrow">لوحة عمليات دعوة</span><h1>كل ما يحتاج انتباهك اليوم في مكان واحد</h1><p>ابدئي من المهام العاجلة وتابعي كل مناسبة من مكان واحد.</p></div><div class="ops-live"><span></span> آخر تحديث: ${new Date().toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'})}</div></div><div class="focus-grid"><div class="focus-card purple"><small>مناسبات اليوم</small><b>${today||1}</b><span>جاهزة للمتابعة</span></div><div class="focus-card red"><small>تحتاج تدخل</small><b>${needs}</b><span>مناسبة غير مكتملة</span></div><div class="focus-card orange"><small>لم تؤكد البطاقات</small><b>${s.pending}</b><span>بطاقة تحتاج تذكير</span></div><div class="focus-card green"><small>بطاقات مؤكدة</small><b>${s.confirmed}</b><span>بطاقات تم تأكيدها</span></div></div><section class="attention-panel"><div class="section-title-row"><h2>يحتاج تدخلك الآن</h2><button class="btn btn-secondary" onclick="go('/admin/operations')">عرض كل المناسبات</button></div><div class="todo-list"><button onclick="go('/admin/send')"><b>إرسال تذكير</b><span>${s.pending} بطاقة لم تؤكد الحضور بعد</span>${icon('arrow-left',18)}</button><button onclick="go('/admin/operations')"><b>مراجعة الجاهزية</b><span>${needs} مناسبة أقل من 85%</span>${icon('arrow-left',18)}</button><button onclick="go('/admin/packages')"><b>تحديث الباقات</b><span>إدارة الأسعار والمميزات المعروضة للزوار</span>${icon('arrow-left',18)}</button></div></section><section class="workspace-list"><div class="section-title-row"><h2>مساحات العمل النشطة</h2><button class="btn btn-primary" onclick="openEventModal()">إنشاء مناسبة</button></div>${bookings.map(eventWorkspaceCard).join('')}</section>`, 'dashboard')}
 function card(t,n,ic){return `<div class="card"><div style="color:var(--p600)">${icon(ic,30)}</div><h3>${t}</h3><div class="big-number">${n}</div></div>`}
 function eventWorkspaceCard(b){const s=statsFor(b.id); const need=(Number(b.health||0))<85; return `<article class="workspace-card ${need?'needs':''}"><div class="workspace-main"><div class="workspace-icon">${icon(need?'alert-circle':'sparkles',28)}</div><div><div class="workspace-meta"><span>${fmt(b.eventDate)}</span><span>${b.venueName||'بدون قاعة'}</span><span>${s.total} ضيف</span></div><h3>${b.eventName}</h3>${countdownWidget(b, true)}<div class="stage-strip"><span class="done">الحجز</span><span class="${s.total?'done':'wait'}">الضيوف</span><span class="${s.sent?'done':'wait'}">الدعوات</span><span class="active">الردود</span><span class="${b.cardsReady?'done':'wait'}">QR</span><span class="${b.screenUploaded?'done':'wait'}">الشاشة</span></div></div></div><div class="workspace-side"><div class="health-ring" style="--score:${b.health||50}%"><b>${b.health||50}%</b></div><button class="btn btn-primary" onclick="openEventWorkspace('${b.id}')">فتح مساحة العمل</button><button class="btn btn-secondary" onclick="setSelectedBookingId('${b.id}');go('/admin/send')">الإرسال</button></div></article>`}
-function activityFeed(){return db.messages.slice(-6).reverse().map(m=>`<div class="tl"><span class="dot"></span>${m.text}<small style="margin-right:auto;color:#777">قبل قليل</small></div>`).join('') || '<p>لا توجد نشاطات بعد.</p>'}
+function activityFeed(){return db.messages.slice(-6).reverse().map(m=>`<div class="tl"><span class="dot"></span>${m.text}<small style="margin-right:auto;color:#777">${currentUpdateTime()}</small></div>`).join('') || '<p>لا توجد نشاطات بعد.</p>'}
 function adminOperations(){adminShell(`<div class="section-title-row"><div><span class="eyebrow">المناسبات</span><h1>غرفة العمليات</h1><p class="muted">كل مناسبة تظهر كمساحة عمل واضحة، مع المرحلة الحالية والإجراء التالي.</p></div><button class="btn btn-primary" onclick="openEventModal()">مناسبة جديدة</button></div><div class="ops-board">${db.bookings.map(eventWorkspaceCard).join('')}</div>`, 'operations')}
 function adminEvents(){adminOperations()}
 function adminGuests(){
@@ -526,20 +614,10 @@ function adminGuests(){
  adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
  ${bookingSelector()}
  <input id="guestImportFile" type="file" accept=".csv,.txt,.xlsx,.xls" style="display:none" onchange="importGuestsFile(event)">
- <div class="list-category-bar">
-  <span>تصنيف القائمة</span>
-  <label><input type="checkbox"> قائمة العروس</label>
-  <label><input type="checkbox"> قائمة المعرس</label>
-  <label><input type="checkbox"> قائمة معدلة</label>
-  <label><input type="checkbox"> قائمة احتياط</label>
-</div>
- <div class="list-category-bar">
-  <span>تصنيف القائمة</span>
-  <label><input type="checkbox"> قائمة العروس</label>
-  <label><input type="checkbox"> قائمة المعرس</label>
-  <label><input type="checkbox"> قائمة معدلة</label>
-  <label><input type="checkbox"> قائمة احتياط</label>
-</div>
+ ${listCategoryBar()}
+ ${listCategoryBar()}
+ ${listCategoryBar()}
+ ${listCategoryBar()}
  <div class="filter-bar compact-filter"><input class="search" id="guestSearch" oninput="renderGuestListOnly()" placeholder="ابحثي بالاسم أو الرقم"><div class="filter-chips"><button onclick="filterGuestsByStatus('')">الكل</button><button onclick="filterGuestsByStatus('confirmed')">حاضر</button><button onclick="filterGuestsByStatus('pending')">لم يؤكد</button><button onclick="filterGuestsByStatus('declined')">معتذر</button><button onclick="filterGuestsByStatus('sent')">مرسل</button></div></div>
  <div class="guest-view-toolbar"><span>طريقة العرض</span>${guestViewToggle()}</div>
  <div class="bulk-bar"><b id="bulkCount">${selectedGuestIds.size} محدد</b><button class="btn btn-secondary" onclick="selectAllVisibleGuests()">تحديد الظاهر</button><button class="btn btn-secondary" onclick="clearGuestSelection()">إلغاء التحديد</button><button class="btn btn-primary" onclick="sendSelectedGuests()">إرسال المحددين</button><button class="btn btn-secondary" onclick="bulkSetStatus('confirmed')">تحويل إلى حاضر</button><button class="btn btn-secondary" onclick="bulkSetStatus('pending')">تحويل إلى لم يؤكد</button><button class="btn btn-ghost" onclick="deleteSelectedGuests()">حذف المحددين</button></div>
@@ -640,6 +718,7 @@ function importGuestsFile(e){
   const text=String(reader.result||'');
   const lines=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
   const bookingId=getSelectedBookingId() || db.bookings[0]?.id;
+  const category=listCategoryValue();
   let added=0;
   const current=db.guests;
   const newGuests=[];
@@ -650,14 +729,14 @@ function importGuestsFile(e){
     const phoneNumber=(parts[1]||'').replace(/\D/g,'');
     const cardsCount=Number(parts[2]||1);
     if(guestName && phoneNumber){
-      const g={id:uid(),bookingId,guestName,phoneNumber:phoneNumber.startsWith('968')?phoneNumber:'968'+phoneNumber,cardsCount,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:cardsCount,shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false};
+      const g={id:uid(),bookingId,guestName,phoneNumber:phoneNumber.startsWith('968')?phoneNumber:'968'+phoneNumber,cardsCount,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:cardsCount,shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false,listCategory:category,source:'admin'};
       current.push(g);
       newGuests.push(g);
       added++;
     }
   });
   db.guests=current;
-  showToast(`تم استيراد ${added} ضيف`);
+  showToast(`تم استيراد ${added} ضيف ضمن ${listCategoryLabel(category)}`);
   render();
   if(newGuests.length) saveGuestsToServer(newGuests,{silent:true}).then(()=>loadGuestsFromServer({silent:true,force:true}));
  };
@@ -814,10 +893,10 @@ async function sendOne(id){
  if(!g)return;
  return apiSendGuests([g], 'دعوة');
 }
-function editGuest(id){const g=db.guests.find(x=>x.id===id); if(!g)return; openGuestModal(); setTimeout(()=>{ $('#gEditingId').value=g.id; $('#gBooking').value=g.bookingId; $('#gName').value=g.guestName; $('#gPhone').value=g.phoneNumber; $('#gCards').value=g.cardsCount; $('#guestModalTitle').textContent='تعديل ضيف'; },0)}
+function editGuest(id){const g=db.guests.find(x=>x.id===id); if(!g)return; openGuestModal(); setTimeout(()=>{ $('#gEditingId').value=g.id; $('#gBooking').value=g.bookingId; $('#gName').value=g.guestName; $('#gPhone').value=g.phoneNumber; $('#gCards').value=g.cardsCount; if($('#gCategory')) $('#gCategory').value=g.listCategory||'bride'; $('#guestModalTitle').textContent='تعديل ضيف'; },0)}
 function sendReminders(bid){showToast('تم إرسال التذكير للضيوف غير المؤكدين')}
 function uploadScreen(bid){let b=db.bookings; const x=b.find(e=>e.id===bid); if(x){x.screenUploaded=true;x.health=Math.min(100,(x.health||70)+5);db.bookings=b;} showToast('تم رفع الشاشة الترحيبية'); render()}
-function adminMessages(){adminShell(`<h1>مركز الرسائل</h1><div class="showcase"><div class="panel"><h3>المحادثات</h3>${db.guests.map(g=>`<div class="story-item" onclick="openGuestDrawer('${g.id}')"><span>${g.guestName}</span><small style="margin-right:auto">${statusBadge(g.rsvpStatus)}</small></div>`).join('')}</div><div class="mock-board"><h3>محادثة واتساب</h3><div class="wa-card"><p>مرحباً، كم سعر الخدمة؟</p></div><div class="wa-card" style="background:var(--p50);margin-top:16px"><p>مرحباً، باقة دعوة المتكامل تبدأ من 150 ر.ع وتشمل الإرسال والمتابعة وبطاقات QR.</p></div><div style="display:flex;gap:10px;margin-top:20px"><input class="search" placeholder="اكتب رسالة..."><button class="btn btn-primary" onclick="showToast('تم إرسال الرسالة تجريبياً')">إرسال</button></div></div></div>`,'messages')}
+function adminMessages(){adminShell(`<h1>مركز الرسائل</h1><div class="showcase"><div class="panel"><h3>المحادثات</h3>${db.guests.map(g=>`<div class="story-item" onclick="openGuestPage('${g.id}')"><span>${g.guestName}</span><small style="margin-right:auto">${statusBadge(g.rsvpStatus)}</small></div>`).join('')}</div><div class="mock-board"><h3>محادثة واتساب</h3><div class="wa-card"><p>مرحباً، كم سعر الخدمة؟</p></div><div class="wa-card" style="background:var(--p50);margin-top:16px"><p>مرحباً، باقة دعوة المتكامل تبدأ من 150 ر.ع وتشمل الإرسال والمتابعة وبطاقات QR.</p></div><div style="display:flex;gap:10px;margin-top:20px"><input class="search" placeholder="اكتب رسالة..."><button class="btn btn-primary" onclick="showToast('تم إرسال الرسالة تجريبياً')">إرسال</button></div></div></div>`,'messages')}
 function adminRecovery(){adminShell(`<h1>مركز استعادة الإرسال</h1><div class="cards">${card('فاشلة',db.guests.filter(g=>g.rsvpStatus==='failed').length,'x-circle')} ${card('غير مقروءة',2,'eye-off')} ${card('أرقام تحتاج مراجعة',1,'phone-off')} ${card('قابلة للإعادة',3,'refresh-cw')}</div><div class="panel" style="margin-top:22px"><h3>اقتراحات ذكية</h3><div class="tl"><span class="dot"></span> الرقم 9944507 يحتاج مفتاح الدولة +968 <button class="btn btn-secondary" onclick="showToast('تم إصلاح الرقم')">إصلاح</button></div><div class="tl"><span class="dot"></span> يمكن إعادة إرسال الدعوات التي لم تُقرأ منذ 3 أيام</div></div>`,'recovery')}
 function adminReports(){
  const selectedBooking=getSelectedBookingId();
@@ -990,8 +1069,8 @@ function setDemoRating(n){
 function eventModal(){return `<div class="modal" id="eventModal"><div class="modal-box"><h2>حجز جديد</h2><div class="form-row"><div class="field"><label>اسم العميل</label><input id="evClient"></div><div class="field"><label>رقم الهاتف</label><input id="evPhone"></div></div><div class="form-row"><div class="field"><label>اسم المناسبة</label><input id="evName"></div><div class="field"><label>التاريخ</label><input id="evDate" type="date"></div></div><div class="field"><label>القاعة</label><input id="evVenue"></div><button class="btn btn-primary" onclick="saveEvent()">حفظ الحجز</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">إغلاق</button></div></div>`}
 function openEventModal(){$('#eventModal').classList.add('open')}
 function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); render()}
-function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>اسم الضيف</label><input id="gName"></div><div class="field"><label>الهاتف</label><input id="gPhone"></div></div><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
-function openGuestModal(){const m=$('#guestModal'); if(m){m.classList.add('open'); $('#guestModalTitle').textContent='إضافة ضيف'; $('#gEditingId').value=''; $('#gName').value=''; $('#gPhone').value=''; $('#gCards').value='1'; if($('#gBooking')) $('#gBooking').value=getSelectedBookingId();}}
+function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>اسم الضيف</label><input id="gName"></div><div class="field"><label>الهاتف</label><input id="gPhone"></div></div><div class="form-row"><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div><div class="field"><label>تصنيف القائمة</label><select id="gCategory"><option value="bride">قائمة العروس</option><option value="groom">قائمة المعرس</option><option value="edited">قائمة معدلة</option><option value="backup">قائمة احتياط</option></select></div></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
+function openGuestModal(){const m=$('#guestModal'); if(m){m.classList.add('open'); $('#guestModalTitle').textContent='إضافة ضيف'; $('#gEditingId').value=''; $('#gName').value=''; $('#gPhone').value=''; $('#gCards').value='1'; if($('#gBooking')) $('#gBooking').value=getSelectedBookingId(); if($('#gCategory')) $('#gCategory').value=listCategoryValue();}}
 async function saveGuest(){
  const name=$('#gName').value.trim();
  if(!name)return showToast('اكتبي اسم الضيف');
@@ -1001,12 +1080,12 @@ async function saveGuest(){
  if(editId){
   guests=guests.map(g=>{
     if(g.id!==editId) return g;
-    savedGuest={...g,bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),pendingCount:g.rsvpStatus==='pending'?Number($('#gCards').value||1):g.pendingCount};
+    savedGuest={...g,bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),pendingCount:g.rsvpStatus==='pending'?Number($('#gCards').value||1):g.pendingCount,listCategory:$('#gCategory')?.value||g.listCategory||'bride'};
     return savedGuest;
   });
   showToast('تم تعديل الضيف');
  }else{
-  savedGuest={id:uid(),bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number($('#gCards').value||1),shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false};
+  savedGuest={id:uid(),bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number($('#gCards').value||1),shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false,listCategory:$('#gCategory')?.value||listCategoryValue(),source:'admin'};
   guests.unshift(savedGuest);
   showToast('تم إضافة الضيف');
  }
@@ -1019,6 +1098,7 @@ async function saveGuest(){
 function deleteGuest(id){if(!confirm('حذف الضيف؟'))return; db.guests=db.guests.filter(g=>g.id!==id); showToast('تم الحذف'); render()}
 function openEventDrawer(id){openEventWorkspace(id)}
 function openEventWorkspace(id){setSelectedBookingId(id); go('/admin/workspace')}
+
 function adminWorkspace(){
  const id=getSelectedBookingId();
  const b=db.bookings.find(x=>x.id===id) || db.bookings[0];
@@ -1089,6 +1169,18 @@ function renderClient(route){
  const pendingCards=Math.max(0,totalCards-confirmedCards-declinedCards);
  const failed=s.failed;
  const interaction=s.total?Math.round(((s.confirmed+s.declined)/s.total)*100):0;
+ const clientSettings=getBookingSettings(b.id);
+ const clientUsed=usedClientCards(b.id);
+ const clientLimit=Number(clientSettings.clientCardLimit||0);
+ const clientRemaining=clientLimit?Math.max(0,clientLimit-clientUsed):'غير محدود';
+ const clientActions = `<section class="panel client-actions-panel">
+   <div class="section-title-row"><div><h3>إدارة قائمة العميل</h3><p class="muted">الإضافة والتعديل حسب الصلاحيات المحددة من إدارة دعوة.</p></div></div>
+   <div class="client-limit-note">الحد المسموح: ${clientLimit||'غير محدود'} • المستخدم: ${clientUsed} • المتبقي: ${clientRemaining}</div>
+   <div class="quick-actions">
+     <button class="btn btn-primary" onclick="${clientSettings.allowClientAdd ? "openClientGuestModal()" : "showToast('يجب طلب إذن من إدارة دعوة للسماح بالإضافة')"}">إضافة ضيف</button>
+     <button class="btn btn-secondary" onclick="${clientSettings.allowBackupList ? "openClientBackupModal()" : "showToast('يجب طلب إذن من إدارة دعوة للسماح بقائمة الاحتياط')"}">إضافة قائمة احتياط</button>
+   </div>
+ </section>`;
  const progressSent=totalCards?Math.round((sentCards/totalCards)*100):0;
  const progressCards=totalCards?Math.round((confirmedCards/totalCards)*100):0;
  const recent=guests.slice(0,6).map(g=>`<div class="client-invitee"><b>${escapeHtml(g.guestName)}</b>${canView('view_status')?`<span>${statusBadge(g.rsvpStatus)}</span>`:''}<small>${canView('view_guests')?`${g.phoneNumber} • ${g.cardsCount} بطاقة`:'بيانات محدودة حسب الصلاحيات'}</small></div>`).join('');
@@ -1101,6 +1193,7 @@ function renderClient(route){
  <section class="client-live-hero"><div class="live-ring"><div class="donut" style="--score:${interaction}%"><span>${interaction}%</span></div><small>نسبة التفاعل</small></div><div class="client-live-title"><span class="badge b-green">LIVE •</span><h2>${escapeHtml(b.eventName)}</h2><p>${fmt(b.eventDate)} • ${escapeHtml(b.venueName||'بدون قاعة')}</p></div></section>
  ${cardsMetrics}
  ${progressBlocks}
+ ${clientActions}
  <section class="client-live-grid">${updatesBlock}${inviteesBlock}</section>
  ${messagesBlock}</div>`;
  afterRender();
@@ -1113,6 +1206,16 @@ function currentPermissions(){
  return currentUser?.permissions || acc?.permissions || ['view_event','view_guests','view_status','view_reports'];
 }
 function canView(key){const p=currentPermissions(); return p.includes('all') || p.includes(key);}
+
+
+function openClientGuestModal(){openGuestModal(); setTimeout(()=>{
+ if($('#gBooking')) $('#gBooking').value=(currentUser?.bookingId||getSelectedBookingId());
+ if($('#gCategory')) $('#gCategory').value='edited';
+},30)}
+function openClientBackupModal(){openGuestModal(); setTimeout(()=>{
+ if($('#gBooking')) $('#gBooking').value=(currentUser?.bookingId||getSelectedBookingId());
+ if($('#gCategory')) $('#gCategory').value='backup';
+},30)}
 
 function commandPalette(){
   return `<div class="cmd-overlay" id="cmdOverlay" onclick="if(event.target===this)toggleCommand(false)">
@@ -1131,7 +1234,7 @@ function toggleCommand(force){
   if(cmdOpen){ setTimeout(()=>{ const input=$('#cmdInput'); if(input){input.focus(); cmdSearch();} }, 30); }
 }
 
-function cmdSearch(){const q=$('#cmdInput').value||''; const items=[['إنشاء حجز جديد',()=>openEventModal()],['إضافة ضيف',()=>openGuestModal()],['فتح غرفة العمليات',()=>go('/admin/operations')],['فتح مركز الرسائل',()=>go('/admin/messages')],['فتح العملاء',()=>go('/admin/clients')],['فتح الحسابات',()=>go('/admin/accounts')],['فتح التكاملات',()=>go('/admin/integrations')],...db.bookings.map(b=>[b.eventName,()=>{go('/admin/events');setTimeout(()=>openEventWorkspace(b.id),100)}]),...db.guests.map(g=>[g.guestName,()=>{go('/admin/guests');setTimeout(()=>openGuestDrawer(g.id),100)}])].filter(x=>x[0].includes(q)); $('#cmdResults').innerHTML=items.slice(0,9).map((x,i)=>`<div class="cmd-item" onclick="window.__cmd[${i}]();toggleCommand(false)">${x[0]}</div>`).join(''); window.__cmd=items.map(x=>x[1]);}
+function cmdSearch(){const q=$('#cmdInput').value||''; const items=[['إنشاء حجز جديد',()=>openEventModal()],['إضافة ضيف',()=>openGuestModal()],['فتح غرفة العمليات',()=>go('/admin/operations')],['فتح مركز الرسائل',()=>go('/admin/messages')],['فتح العملاء',()=>go('/admin/clients')],['فتح الحسابات',()=>go('/admin/accounts')],['فتح التكاملات',()=>go('/admin/integrations')],...db.bookings.map(b=>[b.eventName,()=>{setSelectedBookingId(b.id);go('/admin/workspace')}]),...db.guests.map(g=>[g.guestName,()=>{go('/admin/guests');setTimeout(()=>openGuestPage(g.id),100)}])].filter(x=>x[0].includes(q)); $('#cmdResults').innerHTML=items.slice(0,9).map((x,i)=>`<div class="cmd-item" onclick="window.__cmd[${i}]();toggleCommand(false)">${x[0]}</div>`).join(''); window.__cmd=items.map(x=>x[1]);}
 function calcPrice(){
  const guests=Number($('#guestRange')?.value||100);
  const guestCount=$('#guestCount'); if(guestCount) guestCount.textContent=guests+' ضيف';
@@ -1161,7 +1264,7 @@ function calcPrice(){
    else hint.textContent='كود الخصم غير صحيح';
  }
 }
-function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); if($('#guestTable') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true}), 120); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
+function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if($('#guestTable') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true}), 120); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
 window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key.toLowerCase()==='n')openEventModal();});
 render();
