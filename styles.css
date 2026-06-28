@@ -2189,3 +2189,11 @@ button[onclick="logout()"]:before{
   display:grid !important;
   grid-template-columns:1fr auto;
 }
+
+/* V6 full state sync indicator */
+.side-link[onclick*="manualSyncNow"]{
+  background:#f7f2ff !important;
+  border:1px solid #eadcff !important;
+  color:#6b2bc8 !important;
+  font-weight:900 !important;
+}

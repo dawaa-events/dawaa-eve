@@ -166,7 +166,7 @@ function getBookingSettings(bookingId){
 function saveBookingSettings(bookingId, settings){
   const all=JSON.parse(localStorage.getItem('dawaa_booking_settings')||'{}');
   all[bookingId]={...getBookingSettings(bookingId), ...settings};
-  localStorage.setItem('dawaa_booking_settings', JSON.stringify(all));
+  localStorage.setItem('dawaa_booking_settings', JSON.stringify(all)); if(window.saveStateToServer) setTimeout(()=>saveStateToServer({silent:true}),20);
 }
 function usedClientCards(bookingId){
   return db.guests.filter(g=>g.bookingId===bookingId && g.source==='client').reduce((a,g)=>a+Number(g.cardsCount||1),0);
@@ -278,7 +278,7 @@ function getAccounts(){
   localStorage.setItem('dawaa_accounts', JSON.stringify(defaultAccounts));
   return defaultAccounts;
 }
-function saveAccounts(list){localStorage.setItem('dawaa_accounts', JSON.stringify(list));}
+function saveAccounts(list){localStorage.setItem('dawaa_accounts', JSON.stringify(list)); if(!window.dawApplyingRemoteState && window.saveStateToServer) setTimeout(()=>saveStateToServer({silent:true}),20);}
 function findAccount(login){const value=String(login||'').trim()?.toString().toLowerCase(); return getAccounts().find(a=>a.active!==false && (String(a.email||'')?.toString().toLowerCase()===value || String(a.username||'')?.toString().toLowerCase()===value));}
 function accountBadge(a){return `<span class="badge ${a.active===false?'b-red':a.type==='admin'?'b-purple':'b-green'}">${a.active===false?'معطل':a.type==='admin'?'إدارة':'عميل'}</span>`}
 
@@ -305,6 +305,150 @@ const db={
  get messages(){return JSON.parse(localStorage.getItem('dawaa_messages')||'[]')}, set messages(v){localStorage.setItem('dawaa_messages',JSON.stringify(v))},
 };
 
+
+
+// DAWAA State Sync v6.0 — bookings/accounts/messages/settings through /api/data-sync
+let dawStateSyncInFlight = false;
+let dawApplyingRemoteState = false;
+let dawLastStateSyncAt = 0;
+
+function getBookingSettingsAll(){
+  try { return JSON.parse(localStorage.getItem('dawaa_booking_settings') || '{}'); }
+  catch(e){ return {}; }
+}
+function setBookingSettingsAll(v){
+  localStorage.setItem('dawaa_booking_settings', JSON.stringify(v || {}));
+}
+function getEntryCardsState(){
+  try { return JSON.parse(localStorage.getItem('dawaa_entry_cards') || '{}'); }
+  catch(e){ return {}; }
+}
+function setEntryCardsState(v){
+  localStorage.setItem('dawaa_entry_cards', JSON.stringify(v || {}));
+}
+function normalizeRemoteBooking(b={}){
+  return {
+    id: String(b.localId || b.id || uid()),
+    dbBookingId: b.dbBookingId || b.db_booking_id || (String(b.id||'').startsWith('remote_') ? String(b.id).replace('remote_','') : null),
+    clientName: b.clientName || b.client_name || b.client || '',
+    clientPhone: b.clientPhone || b.client_phone || b.phone || '',
+    eventName: b.eventName || b.event_name || b.title || 'مناسبة',
+    eventType: b.eventType || b.event_type || 'زفاف',
+    eventDate: b.eventDate || b.event_date || b.date || new Date().toISOString(),
+    venueName: b.venueName || b.venue_name || b.venue || '',
+    locationLink: b.locationLink || b.location_link || '',
+    receptionTime: b.receptionTime || b.reception_time || '',
+    hostOne: b.hostOne || b.host_one || '',
+    hostTwo: b.hostTwo || b.host_two || '',
+    brideName: b.brideName || b.bride_name || '',
+    groomName: b.groomName || b.groom_name || '',
+    status: b.status || 'planning',
+    health: Number(b.health || 0),
+    createdAt: b.createdAt || b.created_at || new Date().toISOString(),
+    updatedAt: b.updatedAt || b.updated_at || null,
+    screenUploaded: Boolean(b.screenUploaded || b.screen_uploaded),
+    cardsReady: Boolean(b.cardsReady || b.cards_ready),
+    clientAccount: b.clientAccount || b.client_account || ''
+  };
+}
+function mergeById(local=[], remote=[], normalize=(x)=>x){
+  const map = new Map();
+  for (const item of local || []) map.set(String(item.id || uid()), item);
+  let changed = false;
+  for (const raw of remote || []) {
+    const item = normalize(raw);
+    const key = String(item.id || uid());
+    const old = map.get(key);
+    if (!old) { map.set(key, item); changed = true; continue; }
+    const merged = {...old, ...item, id: old.id || item.id};
+    if (JSON.stringify(old) !== JSON.stringify(merged)) { map.set(key, merged); changed = true; }
+  }
+  return {list:[...map.values()], changed};
+}
+function collectStateForSync(){
+  return {
+    bookings: db.bookings,
+    accounts: getAccounts(),
+    messages: db.messages,
+    bookingSettings: getBookingSettingsAll(),
+    entryCards: getEntryCardsState()
+  };
+}
+function applySyncedState(state={}){
+  let changed = false;
+  window.dawApplyingRemoteState = true;
+  if (Array.isArray(state.bookings) && state.bookings.length) {
+    const out = mergeById(db.bookings, state.bookings, normalizeRemoteBooking);
+    if (out.changed) { db.bookings = out.list; changed = true; }
+  }
+  if (Array.isArray(state.accounts) && state.accounts.length) {
+    const out = mergeById(getAccounts(), state.accounts, x => ({...x, id:String(x.id||uid())}));
+    if (out.changed) { saveAccounts(out.list); changed = true; }
+  }
+  if (Array.isArray(state.messages) && state.messages.length) {
+    const out = mergeById(db.messages, state.messages, x => ({...x, id:String(x.id||uid())}));
+    if (out.changed) { db.messages = out.list; changed = true; }
+  }
+  if (state.bookingSettings && typeof state.bookingSettings === 'object') {
+    const old = getBookingSettingsAll();
+    const merged = {...old, ...state.bookingSettings};
+    if (JSON.stringify(old) !== JSON.stringify(merged)) { setBookingSettingsAll(merged); changed = true; }
+  }
+  if (state.entryCards && typeof state.entryCards === 'object') {
+    const old = getEntryCardsState();
+    const merged = {...old, ...state.entryCards};
+    if (JSON.stringify(old) !== JSON.stringify(merged)) { setEntryCardsState(merged); changed = true; }
+  }
+  window.dawApplyingRemoteState = false;
+  return changed;
+}
+async function loadStateFromServer({silent=true, force=false}={}){
+  if (dawStateSyncInFlight) return false;
+  const nowMs = Date.now();
+  if (!force && nowMs - dawLastStateSyncAt < 3500) return false;
+  dawStateSyncInFlight = true;
+  try {
+    const res = await fetch('/api/data-sync?ts=' + nowMs, {
+      method:'GET',
+      cache:'no-store',
+      headers:{'Cache-Control':'no-cache'}
+    });
+    if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'state sync failed');
+    const changed = applySyncedState(data.state || {});
+    dawLastStateSyncAt = nowMs;
+    if (changed && !silent) showToast('تم تحديث بيانات المناسبات والحسابات');
+    return changed;
+  } catch (e) {
+    console.warn('[DAWAA] loadStateFromServer failed', e);
+    if (!silent) showToast('تعذر تحديث بيانات المناسبات');
+    return false;
+  } finally {
+    dawStateSyncInFlight = false;
+  }
+}
+async function saveStateToServer({silent=true}={}){
+  try {
+    const res = await fetch('/api/data-sync', {
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},
+      body: JSON.stringify({state: collectStateForSync()})
+    });
+    if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'state save failed');
+    if (!silent) showToast('تمت مزامنة بيانات النظام');
+    return true;
+  } catch (e) {
+    console.warn('[DAWAA] saveStateToServer failed', e);
+    if (!silent) showToast('تعذر مزامنة بيانات النظام');
+    return false;
+  }
+}
+window.loadStateFromServer = loadStateFromServer;
+window.saveStateToServer = saveStateToServer;
 
 // DAWAA Sync v5.3 — real device sync through /api/guests-sync
 let dawSyncInFlight = false;
@@ -504,7 +648,7 @@ function bookingSelector(){
   const selected=getSelectedBookingId();
   return `<div class="event-select-panel"><div><span class="eyebrow">اختيار المناسبة</span><h3>اعرضي ضيوف مناسبة واحدة فقط</h3><p>اختاري المناسبة وسيظهر الضيوف المرتبطون بها فقط، حتى لا تختلط القوائم بين الحجوزات.</p></div><select id="bookingFilter" onchange="setSelectedBooking(this.value)">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===selected?'selected':''}>${escapeHtml(b.eventName)} — ${escapeHtml(b.clientName||'')}</option>`).join('')}</select></div>`
 }
-function manualSyncNow(){loadGuestsFromServer({silent:false,force:true})}
+function manualSyncNow(){Promise.all([loadStateFromServer({silent:false,force:true}), loadGuestsFromServer({silent:false,force:true})]).then(([s,g])=>{if(s||g) render();});}
 function showToast(msg){toast.textContent=msg;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2600)}
 function icon(name,size=24){return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`}
 function go(hash){location.hash=hash; window.scrollTo(0,0)}
@@ -916,6 +1060,7 @@ async function apiSendGuests(guestList, label='الدعوات'){
   db.guests=db.guests.map(g=>sentIds.has(g.id)?{...g,rsvpStatus:'sent',invitationSentAt:now(),metaMessageId:(data.results.find(r=>r.guestId===g.id)||{}).messageId||g.metaMessageId}:failedIds.has(g.id)?{...g,rsvpStatus:'failed'}:g);
   db.messages=[...db.messages,{id:uid(),bookingId:booking.id||'bulk',text:`تم إرسال ${data.sent||0} دعوة عبر WhatsApp، وفشل ${data.failed||0}`,createdAt:now(),status:data.failed?'partial':'sent'}];
   selectedGuestIds.clear();
+  saveStateToServer({silent:true});
   showToast(`تم إرسال ${data.sent||0} دعوة${data.failed?`، وفشل ${data.failed}`:''}`);
   render();
  }catch(err){
@@ -1120,7 +1265,7 @@ function setDemoRating(n){
 
 function eventModal(){return `<div class="modal" id="eventModal"><div class="modal-box"><h2>حجز جديد</h2><div class="form-row"><div class="field"><label>اسم العميل</label><input id="evClient"></div><div class="field"><label>رقم الهاتف</label><input id="evPhone"></div></div><div class="form-row"><div class="field"><label>اسم المناسبة</label><input id="evName"></div><div class="field"><label>التاريخ</label><input id="evDate" type="date"></div></div><div class="field"><label>القاعة</label><input id="evVenue"></div><button class="btn btn-primary" onclick="saveEvent()">حفظ الحجز</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">إغلاق</button></div></div>`}
 function openEventModal(){$('#eventModal').classList.add('open')}
-function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); render()}
+function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); saveStateToServer({silent:true}); render()}
 function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>اسم الضيف</label><input id="gName"></div><div class="field"><label>الهاتف</label><input id="gPhone"></div></div><div class="form-row"><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div><div class="field"><label>تصنيف القائمة</label><select id="gCategory"><option value="bride">قائمة العروس</option><option value="groom">قائمة المعرس</option><option value="edited">قائمة معدلة</option><option value="backup">قائمة احتياط</option></select></div></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
 function openGuestModal(){const m=$('#guestModal'); if(m){m.classList.add('open'); $('#guestModalTitle').textContent='إضافة ضيف'; $('#gEditingId').value=''; $('#gName').value=''; $('#gPhone').value=''; $('#gCards').value='1'; if($('#gBooking')) $('#gBooking').value=getSelectedBookingId(); if($('#gCategory')) $('#gCategory').value=listCategoryValue();}}
 async function saveGuest(){
@@ -1318,7 +1463,7 @@ function calcPrice(){
    else hint.textContent='كود الخصم غير صحيح';
  }
 }
-function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if(location.hash.includes('/admin') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true,force:true}), 180); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
+function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if(location.hash.includes('/admin') || location.hash.includes('/client')) setTimeout(()=>Promise.all([loadStateFromServer({silent:true,force:true}), loadGuestsFromServer({silent:true,force:true})]).then(([stateChanged,guestChanged])=>{if((stateChanged||guestChanged) && ($('#guestTable') || location.hash.includes('/client') || location.hash.includes('/admin/send') || location.hash.includes('/admin/operations') || location.hash.includes('/admin/workspace'))) render();}), 180); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
 window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key?.toString().toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key?.toString().toLowerCase()==='n')openEventModal();});
 render();
