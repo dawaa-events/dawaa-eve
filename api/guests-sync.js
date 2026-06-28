@@ -3,6 +3,7 @@ const { listGuests, ensureGuestExists } = require('./_lib/supabase');
 function json(res, status, data) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.end(JSON.stringify(data));
 }
 

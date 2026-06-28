@@ -1,7 +1,3 @@
-
-async function loadGuestsFromServer({silent=true,force=false}={}){return false}
-async function saveGuestsToServer(guests=[], {silent=true}={}){return false}
-function mergeGuestsFromServer(list=[]){return false}
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -309,11 +305,9 @@ const db={
  get messages(){return JSON.parse(localStorage.getItem('dawaa_messages')||'[]')}, set messages(v){localStorage.setItem('dawaa_messages',JSON.stringify(v))},
 };
 
-// DAWAA Sync v5.2
-// Shared source between laptop/phone is /api/guests-sync.
-// LocalStorage remains only a fast UI cache.
+
+// DAWAA Sync v5.3 — real device sync through /api/guests-sync
 let dawSyncInFlight = false;
-let dawSaveInFlight = false;
 let dawLastSyncAt = 0;
 
 function normalizeGuestPhone(v=''){
@@ -326,17 +320,18 @@ function normalizedPhoneForKey(v=''){
   if (phone.length === 8) return '968' + phone;
   return phone;
 }
-function guestKey(g){
-  return String(g.dbGuestId || g.id || '') + '|' + (g.bookingId || g.booking_id || '') + '|' + normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone);
+function guestStableKey(g){
+  const dbid = g.dbGuestId || (String(g.id||'').startsWith('remote_') ? String(g.id).replace('remote_','') : '');
+  const phone = normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone);
+  return dbid ? `db:${dbid}` : `phone:${phone || g.id || uid()}`;
 }
 function normalizeRemoteGuest(g, fallbackBookingId=''){
   const cardsCount = Math.max(1, Number(g.cardsCount ?? g.cards_count ?? g.cards ?? 1) || 1);
-  const bookingId = g.bookingId || g.booking_id || fallbackBookingId || getSelectedBookingId();
   const remoteId = g.dbGuestId || g.id || uid();
   return {
     id: String(g.localId || g.local_id || g.ui_id || ('remote_' + remoteId)),
     dbGuestId: g.dbGuestId || g.id || null,
-    bookingId,
+    bookingId: g.bookingId || g.booking_id || fallbackBookingId || getSelectedBookingId() || db.bookings?.[0]?.id || 'ev1',
     guestName: g.guestName || g.guest_name || g.name || '-',
     phoneNumber: normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone || ''),
     cardsCount,
@@ -358,19 +353,18 @@ function normalizeRemoteGuest(g, fallbackBookingId=''){
   };
 }
 function mergeGuestsFromServer(remoteGuests=[]){
-  const fallbackBookingId = getSelectedBookingId();
+  const selected = getSelectedBookingId() || db.bookings?.[0]?.id || 'ev1';
   const localGuests = Array.isArray(db.guests) ? db.guests : [];
   const byKey = new Map();
+  let changed = false;
 
   for (const local of localGuests) {
-    const key = guestKey(local) || String(local.id || uid());
-    byKey.set(key, local);
+    byKey.set(guestStableKey(local), local);
   }
 
-  let changed = false;
   for (const raw of (remoteGuests || [])) {
-    const remote = normalizeRemoteGuest(raw, fallbackBookingId);
-    const key = guestKey(remote) || String(remote.dbGuestId || remote.id);
+    const remote = normalizeRemoteGuest(raw, selected);
+    const key = guestStableKey(remote);
     const local = byKey.get(key);
 
     if (!local) {
@@ -384,9 +378,10 @@ function mergeGuestsFromServer(remoteGuests=[]){
       ...remote,
       id: local.id || remote.id,
       dbGuestId: remote.dbGuestId || local.dbGuestId,
-      bookingId: local.bookingId || remote.bookingId || fallbackBookingId,
-      listCategory: local.listCategory || remote.listCategory || 'bride',
-      source: local.source || remote.source || 'synced'
+      // If Supabase row has no booking_id, attach it to the selected booking so incognito can see it.
+      bookingId: remote.bookingId || local.bookingId || selected,
+      listCategory: remote.listCategory || local.listCategory || 'bride',
+      source: remote.source || local.source || 'synced'
     };
 
     if (JSON.stringify(merged) !== JSON.stringify(local)) {
@@ -398,11 +393,10 @@ function mergeGuestsFromServer(remoteGuests=[]){
   if (changed) db.guests = Array.from(byKey.values());
   return changed;
 }
-
 async function loadGuestsFromServer({silent=true, force=false}={}){
   if (dawSyncInFlight) return false;
   const nowMs = Date.now();
-  if (!force && nowMs - dawLastSyncAt < 2500) return false;
+  if (!force && nowMs - dawLastSyncAt < 2000) return false;
 
   dawSyncInFlight = true;
   try {
@@ -411,22 +405,15 @@ async function loadGuestsFromServer({silent=true, force=false}={}){
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' }
     });
-
     if (!res.ok) {
       const txt = await res.text().catch(()=>'');
       throw new Error(txt || ('HTTP ' + res.status));
     }
-
     const data = await res.json();
     if (!data.success) throw new Error(data.message || 'sync failed');
-
     const changed = mergeGuestsFromServer(Array.isArray(data.guests) ? data.guests : []);
     dawLastSyncAt = nowMs;
-
-    if (changed && !silent) showToast('تم تحديث البيانات من Supabase');
-    if (changed && ($('#guestTable') || location.hash.includes('/client') || location.hash.includes('/admin/guests') || location.hash.includes('/admin/send'))) {
-      render();
-    }
+    if (!silent) showToast(changed ? 'تم تحديث البيانات' : 'البيانات محدثة');
     return changed;
   } catch (e) {
     console.warn('[DAWAA] loadGuestsFromServer failed', e);
@@ -436,15 +423,18 @@ async function loadGuestsFromServer({silent=true, force=false}={}){
     dawSyncInFlight = false;
   }
 }
-
 async function saveGuestsToServer(guests=[], {silent=true}={}){
   try {
     const list = Array.isArray(guests) ? guests : [guests];
-    const clean = list.filter(Boolean);
+    const clean = list.filter(Boolean).map(g => ({
+      ...g,
+      phoneNumber: normalizedPhoneForKey(g.phoneNumber || g.phone),
+      cardsCount: Math.max(1, Number(g.cardsCount || 1))
+    }));
     if (!clean.length) return false;
 
-    const bookingId = clean[0]?.bookingId || getSelectedBookingId();
-    const booking = db.bookings.find(b => b.id === bookingId) || db.bookings.find(b => b.id === getSelectedBookingId()) || {};
+    const bookingId = clean[0]?.bookingId || getSelectedBookingId() || db.bookings?.[0]?.id;
+    const booking = db.bookings.find(b => b.id === bookingId) || db.bookings[0] || {};
 
     const res = await fetch('/api/guests-sync', {
       method:'POST',
@@ -452,18 +442,13 @@ async function saveGuestsToServer(guests=[], {silent=true}={}){
       headers:{'Content-Type':'application/json', 'Cache-Control':'no-cache'},
       body: JSON.stringify({ booking, guests: clean })
     });
-
     if (!res.ok) {
       const txt = await res.text().catch(()=>'');
       throw new Error(txt || ('HTTP ' + res.status));
     }
-
     const data = await res.json();
     if (!data.success) throw new Error(data.message || 'save failed');
-
-    if (Array.isArray(data.guests) && data.guests.length) {
-      mergeGuestsFromServer(data.guests);
-    }
+    if (Array.isArray(data.guests) && data.guests.length) mergeGuestsFromServer(data.guests);
     if (!silent) showToast('تم حفظ البيانات ومزامنتها');
     return true;
   } catch (e) {
@@ -472,9 +457,9 @@ async function saveGuestsToServer(guests=[], {silent=true}={}){
     return false;
   }
 }
-
 window.loadGuestsFromServer = loadGuestsFromServer;
 window.saveGuestsToServer = saveGuestsToServer;
+
 
 function safeArray(key){try{const v=JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(v)?v:[]}catch(e){return []}}
 function ensureDataIntegrity(){
@@ -684,7 +669,7 @@ function adminGuests(){
  <div id="guestTable">${guestTable(guests, true)}</div>`, 'guests');
  setTimeout(()=>loadGuestsFromServer({silent:true,force:true}), 80);
 }
-function filteredGuestsList(){const q=$('#guestSearch')?.value||''; const bookingId=getSelectedBookingId(); return db.guests.filter(g=>(!bookingId||g.bookingId===bookingId)&&(!guestStatusFilter||g.rsvpStatus===guestStatusFilter)&&(g.guestName.includes(q)||g.phoneNumber.includes(q)))}
+function filteredGuestsList(){const q=String($('#guestSearch')?.value||''); const bookingId=getSelectedBookingId(); return db.guests.filter(g=>(!bookingId||g.bookingId===bookingId)&&(!guestStatusFilter||g.rsvpStatus===guestStatusFilter)&&(String(g.guestName||'').includes(q)||String(g.phoneNumber||'').includes(q)))}
 function guestTable(guests, selectable=false){
  if(guestViewMode === 'table') return guestTableRows(guests, selectable);
  return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="event.stopPropagation()">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml((g.guestName||'ض')[0])}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`
@@ -915,6 +900,7 @@ function adminSend(){
 }
 async function apiSendGuests(guestList, label='الدعوات'){
  if(!guestList.length) return showToast('لا يوجد ضيوف للإرسال');
+ try{ await loadGuestsFromServer({silent:true,force:true}); }catch(e){}
  const booking=db.bookings.find(b=>b.id===(guestList[0]?.bookingId || getSelectedBookingId())) || {};
  showToast(`جاري إرسال ${guestList.length} ${label} عبر WhatsApp...`);
  try{
@@ -934,7 +920,7 @@ async function apiSendGuests(guestList, label='الدعوات'){
   render();
  }catch(err){
   console.error(err);
-  showToast('تعذر الإرسال: تأكدي من متغيرات Meta و Supabase في Vercel');
+  showToast(`تعذر الإرسال: ${err.message || 'راجعي Network Response'}`);
  }
 }
 
@@ -948,6 +934,7 @@ async function sendByMode(){
 
 async function sendInvitations(){
  const bookingId=getSelectedBookingId();
+ await loadGuestsFromServer({silent:true,force:true});
  const guests=db.guests.filter(g=>g.bookingId===bookingId && ['pending','failed','sent'].includes(g.rsvpStatus));
  return apiSendGuests(guests, 'دعوة');
 }
