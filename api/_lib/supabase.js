@@ -162,20 +162,6 @@ async function updateGuestByPhone(phoneNumber, update) {
   return updateGuest(guest.id, update);
 }
 
-async function deleteGuestById(id) {
-  if (!isConfigured() || !id || !isUuid(id)) return null;
-  return request(`/guests?id=eq.${eq(id)}`, {
-    method: 'DELETE',
-    headers: { Prefer: 'return=minimal' }
-  });
-}
-
-async function deleteGuestByPhone(phoneNumber) {
-  const guest = await getGuestByPhone(phoneNumber);
-  if (!guest?.id) return null;
-  return deleteGuestById(guest.id);
-}
-
 async function ensureGuestExists(guest = {}, booking = {}) {
   if (!isConfigured()) return null;
   const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
@@ -288,8 +274,6 @@ module.exports = {
   getSupabaseAdmin,
   updateGuest,
   updateGuestByPhone,
-  deleteGuestById,
-  deleteGuestByPhone,
   ensureGuestExists,
   listGuests,
   getGuestByPhone,
