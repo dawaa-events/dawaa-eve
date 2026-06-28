@@ -48,6 +48,7 @@ function toDbGuestUpdate(update) {
   if ('guestName' in update) out.guest_name = update.guestName;
   if ('phoneNumber' in update) out.phone_number = normalizePhone(update.phoneNumber);
   if ('rsvpStatus' in update) out.rsvp_status = update.rsvpStatus;
+  if ('rsvpStatus' in update) out.status = update.rsvpStatus;
   if ('confirmedCount' in update) out.confirmed_count = Number(update.confirmedCount || 0);
   if ('declinedCount' in update) out.declined_count = Number(update.declinedCount || 0);
   if ('pendingCount' in update) out.pending_count = Number(update.pendingCount || 0);
