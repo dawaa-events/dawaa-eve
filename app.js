@@ -129,42 +129,84 @@ const db={
 // Sync WhatsApp RSVP updates from Supabase into this static design app.
 // The design stores guests in localStorage, while Meta webhook updates Supabase on the server.
 // This keeps the visible dashboard status updated after a guest clicks WhatsApp buttons.
+function normDigits(v){ return String(v || '').replace(/\D/g,''); }
+function localGuestKey(g){
+  const dbid = String(g.dbGuestId || g.id || '').trim();
+  if (dbid && /^[0-9a-f-]{36}$/i.test(dbid)) return `id:${dbid}`;
+  const phone = normDigits(g.phoneNumber || g.phone);
+  return phone ? `phone:${phone}` : `local:${g.id}`;
+}
+function remoteMatchesLocal(remote, local){
+  const rPhone = normDigits(remote.phoneNumber || remote.phone);
+  const lPhone = normDigits(local.phoneNumber || local.phone);
+  if (remote.id && (remote.id === local.dbGuestId || remote.id === local.id)) return true;
+  if (!rPhone || !lPhone) return false;
+  return rPhone === lPhone || (rPhone.startsWith('968') && rPhone.slice(3) === lPhone) || (lPhone.startsWith('968') && lPhone.slice(3) === rPhone) || rPhone === `968${lPhone}` || lPhone === `968${rPhone}`;
+}
+function mergeRemoteGuest(local, remote){
+  const cardsCount = Number(remote.cardsCount ?? local.cardsCount ?? 1);
+  return {
+    ...local,
+    id: local.id || remote.id || uid(),
+    dbGuestId: remote.id || local.dbGuestId,
+    bookingId: local.bookingId || remote.bookingId || getSelectedBookingId(),
+    guestName: remote.guestName || local.guestName || '-',
+    phoneNumber: remote.phoneNumber || local.phoneNumber || '',
+    cardsCount,
+    rsvpStatus: remote.rsvpStatus || local.rsvpStatus || 'pending',
+    confirmedCount: Number(remote.confirmedCount ?? local.confirmedCount ?? 0),
+    declinedCount: Number(remote.declinedCount ?? local.declinedCount ?? 0),
+    pendingCount: Number(remote.pendingCount ?? local.pendingCount ?? cardsCount),
+    invitationSentAt: remote.invitationSentAt || local.invitationSentAt,
+    deliveredAt: remote.deliveredAt || local.deliveredAt,
+    readAt: remote.readAt || local.readAt,
+    repliedAt: remote.repliedAt || local.repliedAt,
+    metaMessageId: remote.metaMessageId || local.metaMessageId,
+    shortCode: remote.shortCode || local.shortCode,
+    notes: remote.notes ?? local.notes
+  };
+}
+
+// Pull guests and RSVP updates from Supabase into local UI.
+// This fixes the laptop/phone mismatch: new guests added from one device become visible on the other.
 async function syncGuestStatusesFromServer(silent=true){
   try{
     const res = await fetch('/api/guests-sync', {cache:'no-store'});
     if(!res.ok) return false;
     const data = await res.json();
     if(!data.success || !Array.isArray(data.guests)) return false;
-    const byPhone = new Map();
-    data.guests.forEach(g=>{
-      const phone = String(g.phoneNumber || '').replace(/\D/g,'');
-      if(phone) byPhone.set(phone, g);
-    });
+
+    let localGuests = db.guests;
     let changed = false;
-    const next = db.guests.map(local=>{
-      const phone = String(local.phoneNumber || '').replace(/\D/g,'');
-      const remote = byPhone.get(phone) || (phone.startsWith('968') ? byPhone.get(phone.slice(3)) : byPhone.get('968'+phone));
-      if(!remote) return local;
-      const merged = {
-        ...local,
-        rsvpStatus: remote.rsvpStatus || local.rsvpStatus,
-        confirmedCount: Number(remote.confirmedCount ?? local.confirmedCount ?? 0),
-        declinedCount: Number(remote.declinedCount ?? local.declinedCount ?? 0),
-        pendingCount: Number(remote.pendingCount ?? local.pendingCount ?? local.cardsCount ?? 1),
-        invitationSentAt: remote.invitationSentAt || local.invitationSentAt,
-        deliveredAt: remote.deliveredAt || local.deliveredAt,
-        readAt: remote.readAt || local.readAt,
-        repliedAt: remote.repliedAt || local.repliedAt,
-        metaMessageId: remote.metaMessageId || local.metaMessageId,
-        dbGuestId: remote.id || local.dbGuestId
-      };
-      if(JSON.stringify(merged)!==JSON.stringify(local)) changed = true;
-      return merged;
-    });
+
+    for(const remote of data.guests){
+      const idx = localGuests.findIndex(local => remoteMatchesLocal(remote, local));
+      if(idx >= 0){
+        const merged = mergeRemoteGuest(localGuests[idx], remote);
+        if(JSON.stringify(merged) !== JSON.stringify(localGuests[idx])){
+          localGuests[idx] = merged;
+          changed = true;
+        }
+      }else{
+        const bookingId = remote.bookingId || getSelectedBookingId() || db.bookings[0]?.id;
+        localGuests.unshift(mergeRemoteGuest({
+          id: remote.id || uid(),
+          bookingId,
+          guestName: remote.guestName || '-',
+          phoneNumber: remote.phoneNumber || '',
+          cardsCount: Number(remote.cardsCount || 1),
+          rsvpStatus: 'pending',
+          confirmedCount: 0,
+          declinedCount: 0,
+          pendingCount: Number(remote.cardsCount || 1)
+        }, remote));
+        changed = true;
+      }
+    }
+
     if(changed){
-      db.guests = next;
-      if(!silent) showToast('تم تحديث حالات الضيوف من WhatsApp');
-      // Re-render only admin/client pages so landing page remains untouched.
+      db.guests = localGuests;
+      if(!silent) showToast('تمت مزامنة بيانات الضيوف');
       if(location.hash.includes('/admin') || location.hash.includes('/client')) render();
     }
     return changed;
@@ -173,8 +215,31 @@ async function syncGuestStatusesFromServer(silent=true){
     return false;
   }
 }
+
+async function pushGuestToServer(guest, action='upsert'){
+  try{
+    const booking = db.bookings.find(b=>b.id===guest.bookingId) || {};
+    const res = await fetch('/api/guests-sync', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action, guest, booking})
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok || !data.success) throw new Error(data.message || 'sync failed');
+    if(data.guest?.id){
+      db.guests = db.guests.map(g => g.id===guest.id ? mergeRemoteGuest(g, data.guest) : g);
+    }
+    return data.guest || null;
+  }catch(e){
+    console.warn('[DAWAA] push guest sync failed', e);
+    showToast('تم الحفظ محلياً، لكن تعذرت مزامنة Supabase');
+    return null;
+  }
+}
+
 setInterval(()=>syncGuestStatusesFromServer(true), 10000);
 window.syncGuestStatusesFromServer = syncGuestStatusesFromServer;
+window.pushGuestToServer = pushGuestToServer;
 
 function safeArray(key){try{const v=JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(v)?v:[]}catch(e){return []}}
 function ensureDataIntegrity(){
@@ -486,6 +551,7 @@ async function apiSendGuests(guestList, label='الدعوات'){
   db.messages=[...db.messages,{id:uid(),bookingId:booking.id||'bulk',text:`تم إرسال ${data.sent||0} دعوة عبر WhatsApp، وفشل ${data.failed||0}`,createdAt:now(),status:data.failed?'partial':'sent'}];
   selectedGuestIds.clear();
   showToast(`تم إرسال ${data.sent||0} دعوة${data.failed?`، وفشل ${data.failed}`:''}`);
+  await syncGuestStatusesFromServer(true);
   render();
  }catch(err){
   console.error(err);
@@ -687,8 +753,39 @@ function openEventModal(){$('#eventModal').classList.add('open')}
 function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); render()}
 function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>اسم الضيف</label><input id="gName"></div><div class="field"><label>الهاتف</label><input id="gPhone"></div></div><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
 function openGuestModal(){const m=$('#guestModal'); if(m){m.classList.add('open'); $('#guestModalTitle').textContent='إضافة ضيف'; $('#gEditingId').value=''; $('#gName').value=''; $('#gPhone').value=''; $('#gCards').value='1'; if($('#gBooking')) $('#gBooking').value=getSelectedBookingId();}}
-function saveGuest(){const name=$('#gName').value.trim(); if(!name)return showToast('اكتبي اسم الضيف'); const editId=$('#gEditingId')?.value; let guests=db.guests; if(editId){guests=guests.map(g=>g.id===editId?{...g,bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),pendingCount:g.rsvpStatus==='pending'?Number($('#gCards').value||1):g.pendingCount}:g); showToast('تم تعديل الضيف')}else{guests.unshift({id:uid(),bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number($('#gCards').value||1),shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false}); showToast('تم إضافة الضيف')} db.guests=guests; closeModal('guestModal'); render()}
-function deleteGuest(id){if(!confirm('حذف الضيف؟'))return; db.guests=db.guests.filter(g=>g.id!==id); showToast('تم الحذف'); render()}
+async function saveGuest(){
+ const name=$('#gName').value.trim();
+ if(!name)return showToast('اكتبي اسم الضيف');
+ const editId=$('#gEditingId')?.value;
+ const cardsCount=Number($('#gCards').value||1);
+ let guests=db.guests;
+ let savedGuest=null;
+ if(editId){
+  guests=guests.map(g=>{
+   if(g.id!==editId) return g;
+   savedGuest={...g,bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount,pendingCount:g.rsvpStatus==='pending'?cardsCount:g.pendingCount};
+   return savedGuest;
+  });
+  showToast('تم تعديل الضيف');
+ }else{
+  savedGuest={id:uid(),bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:cardsCount,shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false};
+  guests.unshift(savedGuest);
+  showToast('تم إضافة الضيف');
+ }
+ db.guests=guests;
+ closeModal('guestModal');
+ render();
+ if(savedGuest) await pushGuestToServer(savedGuest);
+ await syncGuestStatusesFromServer(true);
+}
+async function deleteGuest(id){
+ const guest=db.guests.find(g=>g.id===id);
+ if(!confirm('حذف الضيف؟'))return;
+ db.guests=db.guests.filter(g=>g.id!==id);
+ showToast('تم الحذف');
+ render();
+ if(guest) await pushGuestToServer(guest,'delete');
+}
 function openEventDrawer(id){openEventWorkspace(id)}
 function openEventWorkspace(id){const b=db.bookings.find(x=>x.id===id); const s=statsFor(id); const guests=db.guests.filter(g=>g.bookingId===id); const d=$('#drawer'); d.innerHTML=`<div class="drawer-head"><button class="btn btn-ghost" onclick="closeDrawer()">إغلاق</button><span class="badge ${b.health>=85?'b-green':'b-orange'}">${b.health}% جاهزية</span></div><h2>${b.eventName}</h2><p class="muted">${fmt(b.eventDate)} • ${b.venueName||'بدون قاعة'} • ${b.receptionTime||''}</p><div class="workspace-tabs"><button class="active">نظرة عامة</button><button onclick="showToast('الضيوف ظاهرون أسفل المساحة')">الضيوف</button><button onclick="go('/admin/send')">الإرسال</button><button onclick="go('/admin/messages')">الرسائل</button><button onclick="go('/admin/status')">التقرير</button></div><div class="client-hero"><h3>مسار المناسبة</h3><div class="big-number">${b.health}%</div><div class="progress"><span style="width:${b.health}%"></span></div><div class="stage-strip drawer-stage"><span class="done">الحجز</span><span class="${s.total?'done':'wait'}">الضيوف</span><span class="${s.sent?'done':'wait'}">الدعوات</span><span class="active">الردود</span><span class="${b.cardsReady?'done':'wait'}">QR</span><span class="${b.screenUploaded?'done':'wait'}">الشاشة</span></div></div><div class="cards drawer-stats" style="grid-template-columns:repeat(2,1fr);margin-top:16px">${card('إجمالي',s.total,'users')} ${card('حاضر',s.confirmed,'check')} ${card('معتذر',s.declined,'x')} ${card('لم يؤكد',s.pending,'clock')}</div><h3>الإجراء التالي</h3><div class="todo-list"><button onclick="sendReminders('${b.id}')"><b>إرسال تذكير</b><span>${s.pending} ضيف لم يردوا</span>${icon('send',18)}</button><button onclick="uploadScreen('${b.id}')"><b>رفع الشاشة الترحيبية</b><span>${b.screenUploaded?'تم الرفع':'لم يؤكد الرفع'}</span>${icon('monitor-up',18)}</button></div><h3>ضيوف المناسبة</h3>${guestTable(guests.slice(0,6))}`; d.classList.add('open'); safeIcons();}
 function openGuestDrawer(id){const g=db.guests.find(x=>x.id===id); const b=db.bookings.find(x=>x.id===g.bookingId); const d=$('#drawer'); d.innerHTML=`<div class="drawer-head"><button class="btn btn-ghost" onclick="closeDrawer()">إغلاق</button>${statusBadge(g.rsvpStatus)}</div><div class="guest-profile-head"><div class="guest-avatar big">${escapeHtml((g.guestName||'ض')[0])}</div><div><h2>${g.guestName}</h2><p class="muted">${g.phoneNumber} • ${g.cardsCount} بطاقات • ${b?.eventName||''}</p></div></div><div class="quick-actions" style="margin:18px 0"><button class="btn btn-primary" onclick="sendOne('${g.id}')">إعادة إرسال</button><button class="btn btn-secondary" onclick="showToast('تم نسخ الرقم')">نسخ الرقم</button><button class="btn btn-secondary" onclick="editGuest('${g.id}')">تعديل</button><button class="btn btn-ghost" onclick="deleteGuest('${g.id}')">حذف</button></div><h3>Timeline التفصيلي</h3><div class="timeline proof-timeline"><div class="tl"><span class="dot"></span> تم إنشاء سجل الضيف</div><div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'لم تُرسل الدعوة بعد'}</div><div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'لم يؤكد التسليم'}</div><div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم تُقرأ بعد'}</div><div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'لم يؤكد الرد'}</div></div><h3>بطاقة الدخول</h3><div style="margin-top:12px">${entryCardPreview({guest:g.guestName,code:g.shortCode})}</div>`; d.classList.add('open'); safeIcons();}
@@ -781,7 +878,7 @@ function calcPrice(){
    else hint.textContent='كود الخصم غير صحيح';
  }
 }
-function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
+function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters(); if(location.hash.includes('/admin')||location.hash.includes('/client')) setTimeout(()=>syncGuestStatusesFromServer(true), 50);}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
 window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key.toLowerCase()==='n')openEventModal();});
 render();
