@@ -1,3 +1,4 @@
+const { requireAuth } = require('./_lib/auth');
 const { listGuests, ensureGuestExists } = require('./_lib/supabase');
 
 function json(res, status, data) {
@@ -20,6 +21,7 @@ function readBody(req) {
 }
 
 module.exports = async function handler(req, res) {
+  if (!requireAuth(req, res, 'admin')) return;
   try {
     if (req.method === 'GET') {
       const guests = await listGuests(1000);

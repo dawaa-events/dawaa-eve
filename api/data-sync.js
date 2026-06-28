@@ -1,3 +1,4 @@
+const { requireAuth } = require('./_lib/auth');
 const { supabaseUrl, supabaseServiceRoleKey } = require('./_lib/config');
 
 function json(res, status, data) {
@@ -109,6 +110,7 @@ async function saveState(incoming = {}) {
 }
 
 module.exports = async function handler(req, res) {
+  if (!requireAuth(req, res, 'admin')) return;
   try {
     if (req.method === 'GET') {
       const state = await getState();
