@@ -485,7 +485,7 @@ function renderLogin(){app.innerHTML=`<main class="login-v2">
       <span>دعوة</span>
     </div>
     <div class="login-copy">
-      <span class="eyebrow">بوابة الإدارة والعملاء</span>
+      
       <h1>مرحباً بك<br>قم بتسجيل دخولك</h1>
       <p>إذا كنت لا تمتلك حساباً يرجى التواصل مع إدارة دعوة.</p>
     </div>
