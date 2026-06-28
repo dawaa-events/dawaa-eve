@@ -1,3 +1,7 @@
+
+async function loadGuestsFromServer({silent=true,force=false}={}){return false}
+async function saveGuestsToServer(guests=[], {silent=true}={}){return false}
+function mergeGuestsFromServer(list=[]){return false}
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -171,18 +175,9 @@ function saveBookingSettings(bookingId, settings){
 function usedClientCards(bookingId){
   return db.guests.filter(g=>g.bookingId===bookingId && g.source==='client').reduce((a,g)=>a+Number(g.cardsCount||1),0);
 }
-function listCategoryValue(){
-  const checked=document.querySelector('.list-category-bar input[name="listCategory"]:checked');
-  return checked?.value || localStorage.getItem('dawaa_last_list_category') || 'bride';
-}
-function listCategoryBar(){
-  const saved=localStorage.getItem('dawaa_last_list_category') || 'bride';
-  const opts=[['bride','قائمة العروس'],['groom','قائمة المعرس'],['edited','قائمة معدلة'],['backup','قائمة احتياط']];
-  return `${listCategoryBar()}`;
-}
-function listCategoryLabel(v){
-  return ({bride:'قائمة العروس',groom:'قائمة المعرس',edited:'قائمة معدلة',backup:'قائمة احتياط'})[v||'bride']||'قائمة العروس';
-}
+
+
+
 
 function permissionsPanel(b){
  const st=getBookingSettings(b.id);
@@ -199,6 +194,21 @@ function permissionsPanel(b){
  </section>`;
 }
 
+function listCategoryValue(){
+  const checked=document.querySelector('.list-category-bar input[name="listCategory"]:checked');
+  return checked?.value || localStorage.getItem('dawaa_last_list_category') || 'bride';
+}
+function listCategoryBar(){
+  const saved=localStorage.getItem('dawaa_last_list_category') || 'bride';
+  const opts=[['bride','قائمة العروس'],['groom','قائمة المعرس'],['edited','قائمة معدلة'],['backup','قائمة احتياط']];
+  return `<div class="list-category-bar">
+    <span>تصنيف القائمة</span>
+    ${opts.map(([v,t])=>`<label><input type="radio" name="listCategory" value="${v}" ${saved===v?'checked':''} onchange="localStorage.setItem('dawaa_last_list_category','${v}')"> ${t}</label>`).join('')}
+  </div>`;
+}
+function listCategoryLabel(v){
+  return ({bride:'قائمة العروس',groom:'قائمة المعرس',edited:'قائمة معدلة',backup:'قائمة احتياط'})[v||'bride']||'قائمة العروس';
+}
 function openGuestPage(id){go('/admin/guest-details/'+id)}
 function adminGuestDetails(id){
  const g=db.guests.find(x=>x.id===id);
@@ -273,7 +283,7 @@ function getAccounts(){
   return defaultAccounts;
 }
 function saveAccounts(list){localStorage.setItem('dawaa_accounts', JSON.stringify(list));}
-function findAccount(login){const value=String(login||'').trim().toLowerCase(); return getAccounts().find(a=>a.active!==false && (String(a.email||'').toLowerCase()===value || String(a.username||'').toLowerCase()===value));}
+function findAccount(login){const value=String(login||'').trim()?.toString().toLowerCase(); return getAccounts().find(a=>a.active!==false && (String(a.email||'')?.toString().toLowerCase()===value || String(a.username||'')?.toString().toLowerCase()===value));}
 function accountBadge(a){return `<span class="badge ${a.active===false?'b-red':a.type==='admin'?'b-purple':'b-green'}">${a.active===false?'معطل':a.type==='admin'?'إدارة':'عميل'}</span>`}
 
 function seed(){
@@ -389,6 +399,8 @@ function mergeGuestsFromServer(remoteGuests=[]){
   return changed;
 }
 
+window.loadGuestsFromServer = loadGuestsFromServer;
+window.saveGuestsToServer = saveGuestsToServer;
 function safeArray(key){try{const v=JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(v)?v:[]}catch(e){return []}}
 function ensureDataIntegrity(){
   const defaultBookings=[{id:'ev1',clientName:'سارة محمد',clientPhone:'96891234567',eventName:'زفاف سارة و محمد',eventType:'زفاف',eventDate:'2026-10-15',venueName:'قاعة المرجان - مسقط',locationLink:'https://maps.google.com',receptionTime:'8:00 مساءً',hostOne:'أم محمد',hostTwo:'أم سارة',brideName:'سارة',groomName:'محمد',status:'active',health:92,createdAt:now(),screenUploaded:false,cardsReady:true,clientAccount:'client@dawaa.local'},{id:'ev2',clientName:'مريم البلوشي',clientPhone:'96892345678',eventName:'خطوبة مريم',eventType:'خطوبة',eventDate:'2026-11-04',venueName:'فندق كراون بلازا',locationLink:'',receptionTime:'7:30 مساءً',hostOne:'',hostTwo:'',brideName:'مريم',groomName:'خالد',status:'planning',health:67,createdAt:now(),screenUploaded:false,cardsReady:false,clientAccount:'mariam@dawaa.local'}];
@@ -530,7 +542,7 @@ function renderDemoStep(step){const d=JSON.parse(sessionStorage.getItem('demo')|
  if(step===4) box.innerHTML=`<h3>المراجعة</h3><div class="card"><b>${d.groom||'محمد'} & ${d.bride||'مريم'}</b><p>${d.venue||'قاعة المرجان'} — ضيفان تجريبيان</p><small>المعاينة على اليمين تعرض الرسالة النهائية كما ستصل للضيف الأول.</small></div><button class="btn btn-primary" onclick="runDemoSend()">🚀 إنشاء وإرسال الدعوات</button>`;
  if(step===5) box.innerHTML=`<h3>تمت التجربة بنجاح 🎉</h3><div class="cards"><div class="card"><div class="big-number">2</div><span>ضيف</span></div><div class="card"><div class="big-number">1</div><span>حاضر</span></div><div class="card"><div class="big-number">1</div><span>لم يؤكد</span></div></div><button class="btn btn-primary" onclick="showDemoCompleteModal()">عرض ملخص التجربة</button><button class="btn btn-secondary" onclick="openBookingModal()">احجز مناسبتك الآن</button>`;
  bindDemoLivePreview(); safeIcons();}
-function collectDemoLive(){const d=JSON.parse(sessionStorage.getItem('demo')||'{}'); ['Name','Phone','Groom','Bride','Venue','Date','Guest1','Guest2','Cards1','Cards2'].forEach(k=>{const el=$('#demo'+k); if(el)d[k.toLowerCase()]=el.value}); return d;}
+function collectDemoLive(){const d=JSON.parse(sessionStorage.getItem('demo')||'{}'); ['Name','Phone','Groom','Bride','Venue','Date','Guest1','Guest2','Cards1','Cards2'].forEach(k=>{const el=$('#demo'+k); if(el)d[k?.toString().toLowerCase()]=el.value}); return d;}
 function updateDemoLivePreview(){const d=collectDemoLive(); sessionStorage.setItem('demo',JSON.stringify({...d,step:Number((JSON.parse(sessionStorage.getItem('demo')||'{}')).step||1)})); const prev=$('#demoPreview'); if(!prev)return; prev.innerHTML=whatsappPhonePreview({guest:d.guest1||d.name||'أمينة بنت محمد',groom:d.groom||'محمد',bride:d.bride||'مريم',venue:d.venue||'قاعة المرجان',date:d.date||'15 أكتوبر 2026',cards:d.cards1||1}); safeIcons();}
 function bindDemoLivePreview(){$$('[data-live]').forEach(el=>{el.addEventListener('input',updateDemoLivePreview);el.addEventListener('change',updateDemoLivePreview)}); updateDemoLivePreview();}
 function demoSave(next){const d=collectDemoLive(); d.step=next; sessionStorage.setItem('demo',JSON.stringify(d)); renderDemoStep(next)}
@@ -717,7 +729,7 @@ function importGuestsFile(e){
 }
 
 function normalizeMatchText(v=''){
-  return String(v).toLowerCase().replace(/\.[a-z0-9]+$/i,'').replace(/[ً-ٰٟ]/g,'').replace(/[أإآا]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/[^؀-ۿa-z0-9]+/g,'');
+  return String(v)?.toString().toLowerCase().replace(/\.[a-z0-9]+$/i,'').replace(/[ً-ٰٟ]/g,'').replace(/[أإآا]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/[^؀-ۿa-z0-9]+/g,'');
 }
 function entryCardMatchStats(bookingId=getSelectedBookingId()){
   const guests=db.guests.filter(g=>g.bookingId===bookingId);
@@ -952,7 +964,7 @@ function accountRow(a){const booking=db.bookings.find(b=>b.id===a.bookingId);ret
 function focusAccountForm(){setTimeout(()=>$('#accountFormPanel')?.scrollIntoView({behavior:'smooth',block:'center'}),50)}
 function toggleAccountType(){const type=$('#accType')?.value; if($('#bookingLinkField')) $('#bookingLinkField').style.display=type==='admin'?'none':'block'; if($('#clientPermsBox')) $('#clientPermsBox').style.display=type==='admin'?'none':'block';}
 function resetAccountForm(){['accId','accName','accEmail','accPass'].forEach(id=>{const el=$('#'+id); if(el) el.value=''}); if($('#accType')) $('#accType').value='client'; if($('#accActive')) $('#accActive').value='true'; if($('#accBooking')) $('#accBooking').value=getSelectedBookingId(); $$('[data-perm]').forEach(cb=>cb.checked=['view_event','view_guests','view_status','view_reports'].includes(cb.dataset.perm)); if($('#accountFormTitle')) $('#accountFormTitle').textContent='إنشاء حساب عميل'; toggleAccountType(); focusAccountForm();}
-function saveAccount(){const id=$('#accId').value||uid(); const type=$('#accType').value; const name=$('#accName').value.trim(); const email=$('#accEmail').value.trim(); const pass=$('#accPass').value.trim(); if(!name||!email||!pass) return showToast('املئي الاسم واسم المستخدم وكلمة المرور'); const list=getAccounts(); const exists=list.find(a=>a.id!==id && String(a.email||a.username).toLowerCase()===email.toLowerCase()); if(exists) return showToast('اسم المستخدم مستخدم مسبقاً'); const perms=type==='admin'?['all']:$$('[data-perm]:checked').map(cb=>cb.dataset.perm); if(type==='client'&&!perms.length) return showToast('اختاري صلاحية واحدة على الأقل للعميل'); const next={id,type,role:type,name,email,username:email,password:pass,active:$('#accActive').value==='true',bookingId:type==='client'?$('#accBooking').value:'',permissions:perms,createdAt:list.find(a=>a.id===id)?.createdAt||now(),updatedAt:now()}; const idx=list.findIndex(a=>a.id===id); if(idx>=0) list[idx]=next; else list.unshift(next); saveAccounts(list); if(next.bookingId){const bookings=db.bookings; const b=bookings.find(x=>x.id===next.bookingId); if(b){b.clientAccount=email; db.bookings=bookings;}} showToast('تم حفظ الحساب والصلاحيات'); adminAccounts();}
+function saveAccount(){const id=$('#accId').value||uid(); const type=$('#accType').value; const name=$('#accName').value.trim(); const email=$('#accEmail').value.trim(); const pass=$('#accPass').value.trim(); if(!name||!email||!pass) return showToast('املئي الاسم واسم المستخدم وكلمة المرور'); const list=getAccounts(); const exists=list.find(a=>a.id!==id && String(a.email||a.username)?.toString().toLowerCase()===email?.toString().toLowerCase()); if(exists) return showToast('اسم المستخدم مستخدم مسبقاً'); const perms=type==='admin'?['all']:$$('[data-perm]:checked').map(cb=>cb.dataset.perm); if(type==='client'&&!perms.length) return showToast('اختاري صلاحية واحدة على الأقل للعميل'); const next={id,type,role:type,name,email,username:email,password:pass,active:$('#accActive').value==='true',bookingId:type==='client'?$('#accBooking').value:'',permissions:perms,createdAt:list.find(a=>a.id===id)?.createdAt||now(),updatedAt:now()}; const idx=list.findIndex(a=>a.id===id); if(idx>=0) list[idx]=next; else list.unshift(next); saveAccounts(list); if(next.bookingId){const bookings=db.bookings; const b=bookings.find(x=>x.id===next.bookingId); if(b){b.clientAccount=email; db.bookings=bookings;}} showToast('تم حفظ الحساب والصلاحيات'); adminAccounts();}
 function editAccount(id){const a=getAccounts().find(x=>x.id===id); if(!a)return; $('#accId').value=a.id; $('#accType').value=a.type; $('#accActive').value=String(a.active!==false); $('#accName').value=a.name||''; $('#accEmail').value=a.email||a.username||''; $('#accPass').value=a.password||''; if($('#accBooking')) $('#accBooking').value=a.bookingId||''; $$('[data-perm]').forEach(cb=>cb.checked=(a.permissions||[]).includes(cb.dataset.perm)); $('#accountFormTitle').textContent='تعديل حساب'; toggleAccountType(); focusAccountForm();}
 function toggleAccount(id){const list=getAccounts(); const a=list.find(x=>x.id===id); if(a){a.active=a.active===false; a.updatedAt=now(); saveAccounts(list); showToast(a.active?'تم تفعيل الحساب':'تم تعطيل الحساب'); adminAccounts();}}
 function deleteAccount(id){const a=getAccounts().find(x=>x.id===id); if(!a || a.type==='admin') return showToast('لا يمكن حذف حساب الإدارة الرئيسي من هنا'); if(!confirm('حذف حساب العميل؟')) return; saveAccounts(getAccounts().filter(x=>x.id!==id)); showToast('تم حذف الحساب'); adminAccounts();}
@@ -1245,5 +1257,5 @@ function calcPrice(){
 }
 function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if($('#guestTable') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true}), 120); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
-window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key.toLowerCase()==='n')openEventModal();});
+window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key?.toString().toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key?.toString().toLowerCase()==='n')openEventModal();});
 render();
