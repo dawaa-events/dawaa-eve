@@ -98,7 +98,7 @@ async function processListReply(message) {
   const selectedId = message.interactive.list_reply.id || '';
   const match = selectedId.match(/card_count_(\d+)/);
   if (!match) return;
-  const selectedCount = Number(match[1]);
+  const selectedCount = Math.max(1, Number(match[1]));
   const guest = await findGuestForMessage(phoneNumber, message.context?.id);
   await logWebhookEvent('card_count_selected', { phoneNumber, selectedId, selectedCount, found: !!guest });
   if (!guest) return;

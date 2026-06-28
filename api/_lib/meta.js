@@ -81,10 +81,22 @@ async function sendRsvpDeclined(phoneNumber) {
 }
 
 async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
-  const rows = Array.from({ length: Number(cardsCount || 1) }, (_, i) => {
-    const count = i + 1;
-    return { id: `card_count_${count}`, title: `${count} ${count === 1 ? 'شخص' : 'أشخاص'}`, description: `تأكيد حضور ${count} من أصل ${cardsCount}` };
-  });
+  const totalCards = Math.max(1, Number(cardsCount || 1));
+
+  // WhatsApp Interactive List supports up to 10 rows.
+  // For large card counts, show 1..9 and one "all cards" option.
+  const visibleCounts = totalCards <= 10
+    ? Array.from({ length: totalCards }, (_, i) => i + 1)
+    : [1, 2, 3, 4, 5, 6, 7, 8, 9, totalCards];
+
+  const rows = visibleCounts.map((count) => ({
+    id: `card_count_${count}`,
+    title: count === totalCards ? `${count} بطاقات (الكل)` : `${count} ${count === 1 ? 'بطاقة' : 'بطاقات'}`,
+    description: count === totalCards
+      ? `تأكيد حضور جميع البطاقات (${totalCards})`
+      : `تأكيد حضور ${count} من أصل ${totalCards}`
+  }));
+
   const body = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
@@ -92,12 +104,28 @@ async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: { type: 'text', text: 'تأكيد عدد الحضور' },
-      body: { text: `الفاضلة / ${guestName || '-'}\nيرجى اختيار عدد الحضور من البطاقات المخصصة لكم.` },
-      footer: { text: 'دعوة Events' },
-      action: { button: 'اختيار العدد', sections: [{ title: 'عدد الحضور', rows }] }
+      header: {
+        type: 'text',
+        text: 'تأكيد عدد البطاقات'
+      },
+      body: {
+        text: `الفاضلة / ${guestName || '-'}\nلديكم ${totalCards} ${totalCards === 1 ? 'بطاقة' : 'بطاقات'} مخصصة.\nيرجى اختيار عدد البطاقات التي تريدون تأكيد حضورها.`
+      },
+      footer: {
+        text: 'دعوة Events'
+      },
+      action: {
+        button: 'اختيار العدد',
+        sections: [
+          {
+            title: 'عدد البطاقات',
+            rows
+          }
+        ]
+      }
     }
   };
+
   return postMetaMessage(body);
 }
 
