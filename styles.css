@@ -387,3 +387,110 @@
 .stat-card small::after{
   content:"";
 }
+
+
+/* DAWAA v1.3 — event countdown / next operation */
+.event-countdown{
+  display:grid;
+  grid-template-columns:1fr 1.25fr;
+  gap:12px;
+  margin:14px 0;
+}
+.event-countdown > div{
+  position:relative;
+  overflow:hidden;
+  border:1px solid rgba(124,58,237,.14);
+  background:
+    radial-gradient(circle at top right, rgba(124,58,237,.18), transparent 38%),
+    rgba(255,255,255,.72);
+  backdrop-filter: blur(14px);
+  border-radius:22px;
+  padding:15px 16px;
+  box-shadow:0 14px 34px rgba(38,21,77,.08);
+}
+.event-countdown span{
+  display:block;
+  font-size:11.5px;
+  font-weight:800;
+  color:#7b6a92;
+  margin-bottom:5px;
+}
+.event-countdown b{
+  display:block;
+  font-size:20px;
+  line-height:1.35;
+  color:#2b1749;
+}
+.event-countdown small{
+  display:block;
+  margin-top:3px;
+  color:#7c718d;
+  font-weight:700;
+  font-size:11.5px;
+}
+.event-countdown .count-next:before{
+  content:"";
+  position:absolute;
+  inset:auto 14px 14px auto;
+  width:34px;
+  height:34px;
+  border-radius:50%;
+  background:rgba(124,58,237,.12);
+}
+.event-countdown.wait .count-next{
+  border-color:rgba(245,158,11,.24);
+  background:
+    radial-gradient(circle at top right, rgba(245,158,11,.18), transparent 38%),
+    rgba(255,255,255,.74);
+}
+.event-countdown.cards .count-next{
+  border-color:rgba(59,130,246,.22);
+  background:
+    radial-gradient(circle at top right, rgba(59,130,246,.17), transparent 38%),
+    rgba(255,255,255,.74);
+}
+.event-countdown.ready .count-next{
+  border-color:rgba(34,197,94,.22);
+  background:
+    radial-gradient(circle at top right, rgba(34,197,94,.18), transparent 38%),
+    rgba(255,255,255,.74);
+}
+.event-countdown.urgent .count-main,
+.event-countdown.urgent .count-next{
+  border-color:rgba(239,68,68,.24);
+  background:
+    radial-gradient(circle at top right, rgba(239,68,68,.16), transparent 38%),
+    rgba(255,255,255,.76);
+}
+.event-countdown.compact{
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:10px 0 12px;
+}
+.event-countdown.compact > div{
+  border-radius:16px;
+  padding:10px 12px;
+  box-shadow:none;
+}
+.event-countdown.compact b{
+  font-size:14px;
+}
+.event-countdown.compact span,
+.event-countdown.compact small{
+  font-size:10.5px;
+}
+@media (max-width: 720px){
+  .event-countdown{
+    grid-template-columns:1fr;
+  }
+  .event-countdown.compact{
+    grid-template-columns:1fr;
+  }
+  .event-countdown > div{
+    border-radius:18px;
+    padding:13px 14px;
+  }
+  .event-countdown b{
+    font-size:17px;
+  }
+}
