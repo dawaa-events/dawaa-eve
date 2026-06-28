@@ -83,8 +83,6 @@ async function sendRsvpDeclined(phoneNumber) {
 async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
   const totalCards = Math.max(1, Number(cardsCount || 1));
 
-  // WhatsApp Interactive List supports up to 10 rows.
-  // For large card counts, show 1..9 and one "all cards" option.
   const visibleCounts = totalCards <= 10
     ? Array.from({ length: totalCards }, (_, i) => i + 1)
     : [1, 2, 3, 4, 5, 6, 7, 8, 9, totalCards];
@@ -97,36 +95,24 @@ async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
       : `تأكيد حضور ${count} من أصل ${totalCards}`
   }));
 
-  const body = {
+  return postMetaMessage({
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to: phoneNumber,
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: {
-        type: 'text',
-        text: 'تأكيد عدد البطاقات'
-      },
+      header: { type: 'text', text: 'تأكيد عدد البطاقات' },
       body: {
         text: `الفاضلة / ${guestName || '-'}\nلديكم ${totalCards} ${totalCards === 1 ? 'بطاقة' : 'بطاقات'} مخصصة.\nيرجى اختيار عدد البطاقات التي تريدون تأكيد حضورها.`
       },
-      footer: {
-        text: 'دعوة Events'
-      },
+      footer: { text: 'دعوة Events' },
       action: {
         button: 'اختيار العدد',
-        sections: [
-          {
-            title: 'عدد البطاقات',
-            rows
-          }
-        ]
+        sections: [{ title: 'عدد البطاقات', rows }]
       }
     }
-  };
-
-  return postMetaMessage(body);
+  });
 }
 
 module.exports = { sendTemplate, sendWeddingInvitation, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };

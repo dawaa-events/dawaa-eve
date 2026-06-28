@@ -44,6 +44,9 @@ function isUuid(value) {
 
 function toDbGuestUpdate(update) {
   const out = {};
+  if ('cardsCount' in update) out.cards_count = Number(update.cardsCount || 1);
+  if ('guestName' in update) out.guest_name = update.guestName;
+  if ('phoneNumber' in update) out.phone_number = normalizePhone(update.phoneNumber);
   if ('rsvpStatus' in update) out.rsvp_status = update.rsvpStatus;
   if ('confirmedCount' in update) out.confirmed_count = Number(update.confirmedCount || 0);
   if ('declinedCount' in update) out.declined_count = Number(update.declinedCount || 0);
@@ -166,9 +169,13 @@ async function ensureGuestExists(guest = {}, booking = {}) {
 
   // 1) If frontend supplied a real UUID, update that row.
   if (isUuid(guest.id)) {
+    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
     const updated = await updateGuest(guest.id, {
-      pendingCount: Number(guest.cardsCount || guest.cards_count || guest.cards || 1),
-      rsvpStatus: guest.rsvpStatus || 'pending'
+      cardsCount,
+      pendingCount: cardsCount,
+      rsvpStatus: guest.rsvpStatus || 'pending',
+      guestName: guest.guestName || guest.guest_name || guest.name,
+      phoneNumber
     });
     if (updated) return updated;
   }
@@ -178,7 +185,11 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   if (existing?.id) {
     const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || existing.cardsCount || 1);
     return updateGuest(existing.id, {
+      cardsCount,
       pendingCount: cardsCount,
+      rsvpStatus: guest.rsvpStatus || 'pending',
+      guestName: guest.guestName || guest.guest_name || guest.name || existing.guestName,
+      phoneNumber,
       notes: guest.notes || existing.notes || null
     }) || existing;
   }

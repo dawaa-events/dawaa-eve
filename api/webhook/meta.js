@@ -61,7 +61,7 @@ async function processButton(message) {
   await logWebhookEvent('rsvp_button_press', { phoneNumber, buttonId, contextMessageId, found: !!guest });
   if (!guest) return;
 
-  const cardsCount = Number(guest.cardsCount || 1);
+  const cardsCount = Math.max(1, Number(guest.cardsCount || guest.pendingCount || 1));
   if (buttonId === 'btn_decline') {
     await updateGuest(guest.id, {
       rsvpStatus: 'declined', confirmedCount: 0, declinedCount: cardsCount, pendingCount: 0, repliedAt: new Date().toISOString()
@@ -98,11 +98,11 @@ async function processListReply(message) {
   const selectedId = message.interactive.list_reply.id || '';
   const match = selectedId.match(/card_count_(\d+)/);
   if (!match) return;
-  const selectedCount = Math.max(1, Number(match[1]));
+  const selectedCount = Number(match[1]);
   const guest = await findGuestForMessage(phoneNumber, message.context?.id);
   await logWebhookEvent('card_count_selected', { phoneNumber, selectedId, selectedCount, found: !!guest });
   if (!guest) return;
-  const cardsCount = Number(guest.cardsCount || 1);
+  const cardsCount = Math.max(1, Number(guest.cardsCount || guest.pendingCount || 1));
   const confirmedCount = Math.max(0, Math.min(selectedCount, cardsCount));
   const declinedCount = Math.max(0, cardsCount - confirmedCount);
   await updateGuest(guest.id, {
