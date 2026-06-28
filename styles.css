@@ -380,3 +380,10 @@
   .card-status-chip b{font-size:12.5px}
   .card-status-chip small{font-size:11px}
 }
+
+
+/* DAWAA v1.2.1 — stats count cards, not guest rows */
+.focus-card small::after,
+.stat-card small::after{
+  content:"";
+}
