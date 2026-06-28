@@ -2119,3 +2119,37 @@ button:active,.btn:active{
 .todo-list button:active{
   transform:scale(.99) !important;
 }
+
+
+/* V4.2: timed timeline and workspace guest actions */
+.calm-horizontal-timeline.time-based span{
+  min-width:145px;
+  text-align:center;
+}
+.calm-horizontal-timeline.time-based span b{
+  display:block;
+  font-size:12px;
+  color:var(--calm-ink, #201336);
+}
+.calm-horizontal-timeline.time-based span small{
+  display:block;
+  margin-top:4px;
+  font-size:10.5px;
+  color:var(--calm-muted, #8a7b9d);
+}
+.section-title-row .quick-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+@media(max-width:760px){
+  .calm-horizontal-timeline.time-based span{
+    min-width:128px;
+  }
+  .section-title-row .quick-actions{
+    width:100%;
+  }
+  .section-title-row .quick-actions .btn{
+    flex:1;
+  }
+}

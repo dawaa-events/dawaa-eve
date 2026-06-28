@@ -138,6 +138,27 @@ function updateLiveCountdowns(){
   });
 }
 function currentUpdateTime(){return new Date().toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'});}
+function timeLabel(v){
+  if(!v) return 'لم يتم بعد';
+  const d=new Date(v);
+  if(Number.isNaN(d.getTime())) return 'لم يتم بعد';
+  return d.toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'});
+}
+function eventTimelineData(b, s){
+  const guests=db.guests.filter(g=>g.bookingId===b.id);
+  const firstSent=guests.find(g=>g.invitationSentAt)?.invitationSentAt;
+  const firstReply=guests.find(g=>g.repliedAt)?.repliedAt;
+  return [
+    ['إنشاء المناسبة', b.createdAt || b.eventDate, true],
+    ['رفع الضيوف', guests[0]?.createdAt || guests[0]?.updatedAt || null, Boolean(s.total)],
+    ['إرسال الدعوات', firstSent, Boolean(s.sent)],
+    ['متابعة الردود', firstReply, Boolean(s.confirmed||s.declined)],
+    ['إصدار البطاقات', b.cardsReadyAt || b.updatedAt || null, Boolean(b.cardsReady)]
+  ];
+}
+function eventTimelineHTML(b,s){
+  return `<div class="calm-horizontal-timeline time-based">${eventTimelineData(b,s).map((x,i)=>`<span class="${x[2]?'done':(i===2?'active':'wait')}"><b>${x[0]}</b><small>${timeLabel(x[1])}</small></span>`).join('')}</div>`;
+}
 function getBookingSettings(bookingId){
   const all=JSON.parse(localStorage.getItem('dawaa_booking_settings')||'{}');
   return {allowClientAdd:false, allowClientEdit:false, allowClientDelete:false, allowBackupList:false, clientCardLimit:0, ...(all[bookingId]||{})};
@@ -1102,6 +1123,7 @@ async function saveGuest(){
 function deleteGuest(id){if(!confirm('حذف الضيف؟'))return; db.guests=db.guests.filter(g=>g.id!==id); showToast('تم الحذف'); render()}
 function openEventDrawer(id){openEventWorkspace(id)}
 function openEventWorkspace(id){setSelectedBookingId(id); go('/admin/workspace')}
+function goBookingPage(id,page){setSelectedBookingId(id); go('/admin/'+page)}
 
 function adminWorkspace(){
  const id=getSelectedBookingId();
@@ -1135,10 +1157,10 @@ function adminWorkspace(){
   </div>
 
   <section class="workspace-actions-grid">
-    <button onclick="go('/admin/guests')"><b>الضيوف</b><small>إضافة، استيراد، وتصنيف القوائم</small></button>
-    <button onclick="go('/admin/send')"><b>الإرسال</b><small>إرسال الدعوات والتذكير</small></button>
-    <button onclick="go('/admin/messages')"><b>الرسائل</b><small>متابعة محادثات الضيوف</small></button>
-    <button onclick="go('/admin/reports')"><b>التقارير</b><small>حضور واعتذارات وتصدير</small></button>
+    <button onclick="goBookingPage(b.id,'guests')"><b>الضيوف</b><small>إضافة، استيراد، وتصنيف القوائم</small></button>
+    <button onclick="goBookingPage(b.id,'send')"><b>الإرسال</b><small>إرسال الدعوات والتذكير</small></button>
+    <button onclick="goBookingPage(b.id,'messages')"><b>الرسائل</b><small>متابعة محادثات الضيوف</small></button>
+    <button onclick="goBookingPage(b.id,'reports')"><b>التقارير</b><small>حضور واعتذارات وتصدير</small></button>
   </section>
 
   <section class="cards workspace-kpis-v2">
