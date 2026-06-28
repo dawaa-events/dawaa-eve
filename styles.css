@@ -2153,3 +2153,39 @@ button:active,.btn:active{
     flex:1;
   }
 }
+
+/* V5 Stabilized: hide unnecessary search boxes and make logout clearer */
+.cmd-overlay:not(.open), .cmd-overlay:not(.open) *{
+  pointer-events:none;
+}
+.ops-live, .top-search, .quick-search, .search-superbar{
+  display:none !important;
+}
+.side-link[onclick*="logout"],
+button[onclick="logout()"]{
+  background:#fff !important;
+  border:1px solid #e9ddff !important;
+  color:#6b2bc8 !important;
+  font-weight:900 !important;
+  box-shadow:0 8px 24px rgba(60,32,100,.07) !important;
+}
+.side-link[onclick*="logout"]:before,
+button[onclick="logout()"]:before{
+  content:"⎋ ";
+}
+
+.ops-board.compact-events .workspace-card{
+  padding:14px !important;
+}
+.ops-board.compact-events .stage-strip,
+.ops-board.compact-events .event-countdown{
+  display:none !important;
+}
+.ops-board.table-events{
+  display:block !important;
+}
+.ops-board.table-events .workspace-card{
+  margin-bottom:10px;
+  display:grid !important;
+  grid-template-columns:1fr auto;
+}
