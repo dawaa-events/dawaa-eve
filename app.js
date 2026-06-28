@@ -309,32 +309,36 @@ const db={
  get messages(){return JSON.parse(localStorage.getItem('dawaa_messages')||'[]')}, set messages(v){localStorage.setItem('dawaa_messages',JSON.stringify(v))},
 };
 
-// Lightweight Supabase sync v2.
-// LocalStorage remains a fast UI cache, but Supabase is the shared source between laptop/phone.
-// No heavy polling. We load on pages that need guests and after add/edit/import.
+// DAWAA Sync v5.2
+// Shared source between laptop/phone is /api/guests-sync.
+// LocalStorage remains only a fast UI cache.
 let dawSyncInFlight = false;
+let dawSaveInFlight = false;
 let dawLastSyncAt = 0;
 
 function normalizeGuestPhone(v=''){
   return String(v || '').replace(/\D/g, '');
 }
-
-function guestKey(g){
-  const phone = normalizeGuestPhone(g.phoneNumber || g.phone);
-  if (!phone) return String(g.id || g.dbGuestId || '');
+function normalizedPhoneForKey(v=''){
+  const phone = normalizeGuestPhone(v);
+  if (!phone) return '';
   if (phone.startsWith('968') && phone.length > 8) return phone;
   if (phone.length === 8) return '968' + phone;
   return phone;
 }
-
+function guestKey(g){
+  return String(g.dbGuestId || g.id || '') + '|' + (g.bookingId || g.booking_id || '') + '|' + normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone);
+}
 function normalizeRemoteGuest(g, fallbackBookingId=''){
-  const cardsCount = Number(g.cardsCount ?? g.cards_count ?? g.cards ?? 1) || 1;
+  const cardsCount = Math.max(1, Number(g.cardsCount ?? g.cards_count ?? g.cards ?? 1) || 1);
+  const bookingId = g.bookingId || g.booking_id || fallbackBookingId || getSelectedBookingId();
+  const remoteId = g.dbGuestId || g.id || uid();
   return {
-    id: 'local_' + (g.id || uid()),
-    dbGuestId: g.id || g.dbGuestId || null,
-    bookingId: g.bookingId || g.booking_id || fallbackBookingId || getSelectedBookingId(),
+    id: String(g.localId || g.local_id || g.ui_id || ('remote_' + remoteId)),
+    dbGuestId: g.dbGuestId || g.id || null,
+    bookingId,
     guestName: g.guestName || g.guest_name || g.name || '-',
-    phoneNumber: normalizeGuestPhone(g.phoneNumber || g.phone_number || g.phone || ''),
+    phoneNumber: normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone || ''),
     cardsCount,
     rsvpStatus: g.rsvpStatus || g.rsvp_status || g.status || 'pending',
     confirmedCount: Number(g.confirmedCount ?? g.confirmed_count ?? 0),
@@ -347,19 +351,26 @@ function normalizeRemoteGuest(g, fallbackBookingId=''){
     metaMessageId: g.metaMessageId || g.meta_message_id || null,
     shortCode: g.shortCode || g.short_code || '',
     notes: g.notes || '',
-    checkedIn: Boolean(g.checkedIn || g.checked_in_at)
+    listCategory: g.listCategory || g.list_category || 'bride',
+    source: g.source || 'synced',
+    checkedIn: Boolean(g.checkedIn || g.checked_in_at),
+    updatedAt: g.updatedAt || g.updated_at || null
   };
 }
-
 function mergeGuestsFromServer(remoteGuests=[]){
   const fallbackBookingId = getSelectedBookingId();
   const localGuests = Array.isArray(db.guests) ? db.guests : [];
-  const byKey = new Map(localGuests.map(g => [guestKey(g), g]));
-  let changed = false;
+  const byKey = new Map();
 
-  for (const remoteRaw of remoteGuests) {
-    const remote = normalizeRemoteGuest(remoteRaw, fallbackBookingId);
-    const key = guestKey(remote);
+  for (const local of localGuests) {
+    const key = guestKey(local) || String(local.id || uid());
+    byKey.set(key, local);
+  }
+
+  let changed = false;
+  for (const raw of (remoteGuests || [])) {
+    const remote = normalizeRemoteGuest(raw, fallbackBookingId);
+    const key = guestKey(remote) || String(remote.dbGuestId || remote.id);
     const local = byKey.get(key);
 
     if (!local) {
@@ -370,23 +381,12 @@ function mergeGuestsFromServer(remoteGuests=[]){
 
     const merged = {
       ...local,
+      ...remote,
+      id: local.id || remote.id,
       dbGuestId: remote.dbGuestId || local.dbGuestId,
-      // Keep local bookingId if available because this static UI uses local booking ids like ev1.
       bookingId: local.bookingId || remote.bookingId || fallbackBookingId,
-      guestName: remote.guestName || local.guestName,
-      phoneNumber: remote.phoneNumber || local.phoneNumber,
-      cardsCount: Number(remote.cardsCount || local.cardsCount || 1),
-      rsvpStatus: remote.rsvpStatus || local.rsvpStatus,
-      confirmedCount: Number(remote.confirmedCount ?? local.confirmedCount ?? 0),
-      declinedCount: Number(remote.declinedCount ?? local.declinedCount ?? 0),
-      pendingCount: Number(remote.pendingCount ?? local.pendingCount ?? local.cardsCount ?? 1),
-      invitationSentAt: remote.invitationSentAt || local.invitationSentAt,
-      deliveredAt: remote.deliveredAt || local.deliveredAt,
-      readAt: remote.readAt || local.readAt,
-      repliedAt: remote.repliedAt || local.repliedAt,
-      metaMessageId: remote.metaMessageId || local.metaMessageId,
-      shortCode: remote.shortCode || local.shortCode,
-      notes: remote.notes || local.notes
+      listCategory: local.listCategory || remote.listCategory || 'bride',
+      source: local.source || remote.source || 'synced'
     };
 
     if (JSON.stringify(merged) !== JSON.stringify(local)) {
@@ -399,8 +399,83 @@ function mergeGuestsFromServer(remoteGuests=[]){
   return changed;
 }
 
+async function loadGuestsFromServer({silent=true, force=false}={}){
+  if (dawSyncInFlight) return false;
+  const nowMs = Date.now();
+  if (!force && nowMs - dawLastSyncAt < 2500) return false;
+
+  dawSyncInFlight = true;
+  try {
+    const res = await fetch('/api/guests-sync?ts=' + nowMs, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(()=>'');
+      throw new Error(txt || ('HTTP ' + res.status));
+    }
+
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'sync failed');
+
+    const changed = mergeGuestsFromServer(Array.isArray(data.guests) ? data.guests : []);
+    dawLastSyncAt = nowMs;
+
+    if (changed && !silent) showToast('تم تحديث البيانات من Supabase');
+    if (changed && ($('#guestTable') || location.hash.includes('/client') || location.hash.includes('/admin/guests') || location.hash.includes('/admin/send'))) {
+      render();
+    }
+    return changed;
+  } catch (e) {
+    console.warn('[DAWAA] loadGuestsFromServer failed', e);
+    if (!silent) showToast('تعذر تحديث البيانات من Supabase');
+    return false;
+  } finally {
+    dawSyncInFlight = false;
+  }
+}
+
+async function saveGuestsToServer(guests=[], {silent=true}={}){
+  try {
+    const list = Array.isArray(guests) ? guests : [guests];
+    const clean = list.filter(Boolean);
+    if (!clean.length) return false;
+
+    const bookingId = clean[0]?.bookingId || getSelectedBookingId();
+    const booking = db.bookings.find(b => b.id === bookingId) || db.bookings.find(b => b.id === getSelectedBookingId()) || {};
+
+    const res = await fetch('/api/guests-sync', {
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json', 'Cache-Control':'no-cache'},
+      body: JSON.stringify({ booking, guests: clean })
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(()=>'');
+      throw new Error(txt || ('HTTP ' + res.status));
+    }
+
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'save failed');
+
+    if (Array.isArray(data.guests) && data.guests.length) {
+      mergeGuestsFromServer(data.guests);
+    }
+    if (!silent) showToast('تم حفظ البيانات ومزامنتها');
+    return true;
+  } catch (e) {
+    console.warn('[DAWAA] saveGuestsToServer failed', e);
+    if (!silent) showToast('تعذر حفظ البيانات في Supabase');
+    return false;
+  }
+}
+
 window.loadGuestsFromServer = loadGuestsFromServer;
 window.saveGuestsToServer = saveGuestsToServer;
+
 function safeArray(key){try{const v=JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(v)?v:[]}catch(e){return []}}
 function ensureDataIntegrity(){
   const defaultBookings=[{id:'ev1',clientName:'سارة محمد',clientPhone:'96891234567',eventName:'زفاف سارة و محمد',eventType:'زفاف',eventDate:'2026-10-15',venueName:'قاعة المرجان - مسقط',locationLink:'https://maps.google.com',receptionTime:'8:00 مساءً',hostOne:'أم محمد',hostTwo:'أم سارة',brideName:'سارة',groomName:'محمد',status:'active',health:92,createdAt:now(),screenUploaded:false,cardsReady:true,clientAccount:'client@dawaa.local'},{id:'ev2',clientName:'مريم البلوشي',clientPhone:'96892345678',eventName:'خطوبة مريم',eventType:'خطوبة',eventDate:'2026-11-04',venueName:'فندق كراون بلازا',locationLink:'',receptionTime:'7:30 مساءً',hostOne:'',hostTwo:'',brideName:'مريم',groomName:'خالد',status:'planning',health:67,createdAt:now(),screenUploaded:false,cardsReady:false,clientAccount:'mariam@dawaa.local'}];
@@ -444,6 +519,7 @@ function bookingSelector(){
   const selected=getSelectedBookingId();
   return `<div class="event-select-panel"><div><span class="eyebrow">اختيار المناسبة</span><h3>اعرضي ضيوف مناسبة واحدة فقط</h3><p>اختاري المناسبة وسيظهر الضيوف المرتبطون بها فقط، حتى لا تختلط القوائم بين الحجوزات.</p></div><select id="bookingFilter" onchange="setSelectedBooking(this.value)">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===selected?'selected':''}>${escapeHtml(b.eventName)} — ${escapeHtml(b.clientName||'')}</option>`).join('')}</select></div>`
 }
+function manualSyncNow(){loadGuestsFromServer({silent:false,force:true})}
 function showToast(msg){toast.textContent=msg;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2600)}
 function icon(name,size=24){return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`}
 function go(hash){location.hash=hash; window.scrollTo(0,0)}
@@ -580,7 +656,7 @@ async function login(){const email=$('#email').value.trim(); const pass=$('#pass
  const acc=findAccount(email); if(!acc || acc.password!==pass) return showToast('بيانات الدخول غير صحيحة أو الحساب معطل'); currentUser={email:acc.email||email,role:acc.role||acc.type,name:acc.name||'',accountId:acc.id,bookingId:acc.bookingId||'',permissions:acc.permissions||[]}; localStorage.setItem('dawaa_user',JSON.stringify(currentUser)); go(currentUser.role==='admin'?'/admin/dashboard':'/client/dashboard')}
 function ensure(role){if(!currentUser){go('/login');return false} if(role && currentUser.role!==role){showToast('ليس لديك صلاحية لهذه الصفحة');go('/login');return false} return true}
 function logout(){localStorage.removeItem('dawaa_user');currentUser=null;go('/')}
-function adminShell(content,active='dashboard'){app.innerHTML=`<div class="app-shell command-admin"><aside class="side" id="side"><div class="brand"><div class="logo-mark"><img src="assets/dawaa-logo-purple.png" alt="شعار دعوة"></div><span>دعوة</span></div><div class="side-caption">غرفة عمليات المناسبات</div><div class="side-menu">${[['dashboard','الرئيسية','home','dashboard'],['operations','المناسبات','calendar-days','operations'],['guests','الضيوف','users','guests'],['clients','العملاء','user-round','clients'],['accounts','الحسابات','user-cog','accounts'],['send','الإرسال','send','send'],['messages','الرسائل','message-circle','messages'],['ratings','تقييم الزوار','star','ratings'],['reports','التقارير','bar-chart-3','reports'],['packages','الباقات','badge-dollar-sign','packages'],['integrations','التكاملات','plug-zap','integrations'],['settings','الإعدادات','settings','settings']].map(x=>`<div class="side-link ${active===x[0]?'active':''}" onclick="go('/admin/${x[3]}')">${icon(x[2],20)} ${x[1]}</div>`).join('')}<div class="side-divider"></div><div class="side-link" onclick="toggleCommand(true)">${icon('search',20)} البحث السريع</div><div class="side-link" onclick="logout()">${icon('log-out',20)} تسجيل الخروج</div></div></aside><main class="main"><div class="topbar admin-topbar"><button class="btn btn-secondary mobile-toggle" onclick="$('#side').classList.toggle('open')">${icon('menu',20)}</button><button class="search command-search" onclick="toggleCommand(true)">ابحثي عن مناسبة، ضيف، رقم، أو نفذي أمر… <b>Ctrl K</b></button><div class="quick-actions"><button class="btn btn-secondary" onclick="openGuestModal()">ضيف جديد</button><button class="btn btn-primary" onclick="openEventModal()">مناسبة جديدة</button></div></div><div class="route-page">${content}</div></main></div>${eventModal()}${guestModal()}${commandPalette()}<div class="drawer wide-drawer" id="drawer"></div>`; afterRender();}
+function adminShell(content,active='dashboard'){app.innerHTML=`<div class="app-shell command-admin"><aside class="side" id="side"><div class="brand"><div class="logo-mark"><img src="assets/dawaa-logo-purple.png" alt="شعار دعوة"></div><span>دعوة</span></div><div class="side-caption">غرفة عمليات المناسبات</div><div class="side-menu">${[['dashboard','الرئيسية','home','dashboard'],['operations','المناسبات','calendar-days','operations'],['guests','الضيوف','users','guests'],['clients','العملاء','user-round','clients'],['accounts','الحسابات','user-cog','accounts'],['send','الإرسال','send','send'],['messages','الرسائل','message-circle','messages'],['ratings','تقييم الزوار','star','ratings'],['reports','التقارير','bar-chart-3','reports'],['packages','الباقات','badge-dollar-sign','packages'],['integrations','التكاملات','plug-zap','integrations'],['settings','الإعدادات','settings','settings']].map(x=>`<div class="side-link ${active===x[0]?'active':''}" onclick="go('/admin/${x[3]}')">${icon(x[2],20)} ${x[1]}</div>`).join('')}<div class="side-divider"></div><div class="side-link" onclick="manualSyncNow()">${icon('refresh-cw',20)} تحديث البيانات</div><div class="side-link" onclick="logout()">${icon('log-out',20)} تسجيل الخروج</div></div></aside><main class="main"><div class="topbar admin-topbar"><button class="btn btn-secondary mobile-toggle" onclick="$('#side').classList.toggle('open')">${icon('menu',20)}</button><button class="search command-search" onclick="toggleCommand(true)">ابحثي عن مناسبة، ضيف، رقم، أو نفذي أمر… <b>Ctrl K</b></button><div class="quick-actions"><button class="btn btn-secondary" onclick="openGuestModal()">ضيف جديد</button><button class="btn btn-primary" onclick="openEventModal()">مناسبة جديدة</button></div></div><div class="route-page">${content}</div></main></div>${eventModal()}${guestModal()}${commandPalette()}<div class="drawer wide-drawer" id="drawer"></div>`; afterRender();}
 function renderAdmin(route){if(!ensure('admin'))return; const page=route.split('/')[2]||'dashboard'; const id=route.split('/')[3]||''; if(page==='dashboard') return adminDashboard(); if(page==='operations') return adminOperations(); if(page==='workspace') return adminWorkspace(); if(page==='events') return adminOperations(); if(page==='guests') return adminGuests(); if(page==='guest-details') return adminGuestDetails(id); if(page==='clients') return adminClients(); if(page==='accounts') return adminAccounts(); if(page==='send') return adminSend(); if(page==='messages') return adminMessages(); if(page==='ratings') return adminRatings(); if(page==='recovery') return adminRecovery(); if(page==='reports') return adminReports(); if(page==='status') return adminStatus(); if(page==='packages') return adminPackages(); if(page==='integrations') return adminIntegrations(); if(page==='settings') return adminSettings(); adminDashboard();}
 function statsFor(bookingId){const gs=db.guests.filter(g=>!bookingId||g.bookingId===bookingId); const totalCards=gs.reduce((a,g)=>a+Number(g.cardsCount||1),0); const confirmedCards=gs.reduce((a,g)=>a+Number(g.confirmedCount||0),0); const declinedCards=gs.reduce((a,g)=>a+Number(g.declinedCount||0),0); const pendingCards=Math.max(0,totalCards-confirmedCards-declinedCards); return {total:totalCards,totalPeople:gs.length,totalCards,pending:pendingCards,confirmed:confirmedCards,declined:declinedCards,sent:gs.filter(g=>['sent','delivered','read'].includes(g.rsvpStatus)).reduce((a,g)=>a+Number(g.pendingCount||g.cardsCount||1),0),failed:gs.filter(g=>g.rsvpStatus==='failed').reduce((a,g)=>a+Number(g.cardsCount||1),0),confirmedCards,declinedCards,pendingCards}}
 function adminDashboard(){const bookings=db.bookings; const s=statsFor(); const today=bookings.filter(b=>new Date(b.eventDate).toDateString()===new Date().toDateString()).length; const needs=bookings.filter(b=>(b.health||0)<85).length; adminShell(`<div class="ops-hero"><div><span class="eyebrow">لوحة عمليات دعوة</span><h1>كل ما يحتاج انتباهك اليوم في مكان واحد</h1><p>ابدئي من المهام العاجلة وتابعي كل مناسبة من مكان واحد.</p></div><div class="ops-live"><span></span> آخر تحديث: ${new Date().toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'})}</div></div><div class="focus-grid"><div class="focus-card purple"><small>مناسبات اليوم</small><b>${today||1}</b><span>جاهزة للمتابعة</span></div><div class="focus-card red"><small>تحتاج تدخل</small><b>${needs}</b><span>مناسبة غير مكتملة</span></div><div class="focus-card orange"><small>لم تؤكد البطاقات</small><b>${s.pending}</b><span>بطاقة تحتاج تذكير</span></div><div class="focus-card green"><small>بطاقات مؤكدة</small><b>${s.confirmed}</b><span>بطاقات تم تأكيدها</span></div></div><section class="attention-panel"><div class="section-title-row"><h2>يحتاج تدخلك الآن</h2><button class="btn btn-secondary" onclick="go('/admin/operations')">عرض كل المناسبات</button></div><div class="todo-list"><button onclick="go('/admin/send')"><b>إرسال تذكير</b><span>${s.pending} بطاقة لم تؤكد الحضور بعد</span>${icon('arrow-left',18)}</button><button onclick="go('/admin/operations')"><b>مراجعة الجاهزية</b><span>${needs} مناسبة أقل من 85%</span>${icon('arrow-left',18)}</button><button onclick="go('/admin/packages')"><b>تحديث الباقات</b><span>إدارة الأسعار والمميزات المعروضة للزوار</span>${icon('arrow-left',18)}</button></div></section><section class="workspace-list"><div class="section-title-row"><h2>مساحات العمل النشطة</h2><button class="btn btn-primary" onclick="openEventModal()">إنشاء مناسبة</button></div>${bookings.map(eventWorkspaceCard).join('')}</section>`, 'dashboard')}
@@ -1255,7 +1331,7 @@ function calcPrice(){
    else hint.textContent='كود الخصم غير صحيح';
  }
 }
-function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if($('#guestTable') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true}), 120); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
+function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if(location.hash.includes('/admin') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true,force:true}), 180); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
 window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key?.toString().toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key?.toString().toLowerCase()==='n')openEventModal();});
 render();
