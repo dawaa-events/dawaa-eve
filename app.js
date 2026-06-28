@@ -458,6 +458,10 @@ function setSelectedBooking(id){
   selectedGuestIds.clear();
   render();
 }
+function setSelectedBookingId(id){
+  localStorage.setItem('dawaa_selected_booking', id);
+  selectedGuestIds.clear();
+}
 function bookingSelector(){
   const selected=getSelectedBookingId();
   return `<div class="event-select-panel"><div><span class="eyebrow">اختيار المناسبة</span><h3>اعرضي ضيوف مناسبة واحدة فقط</h3><p>اختاري المناسبة وسيظهر الضيوف المرتبطون بها فقط، حتى لا تختلط القوائم بين الحجوزات.</p></div><select id="bookingFilter" onchange="setSelectedBooking(this.value)">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===selected?'selected':''}>${escapeHtml(b.eventName)} — ${escapeHtml(b.clientName||'')}</option>`).join('')}</select></div>`

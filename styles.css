@@ -2102,3 +2102,20 @@ button:active,.btn:active{
   .permission-grid{grid-template-columns:1fr}
   .horizontal-proof .tl{min-width:145px}
 }
+
+
+/* V4.1 hotfix: make interactive action cards feel clickable */
+.calm-actions-grid button,
+.workspace-actions-grid button,
+.workspace-card button,
+.guest-mini-card button,
+.todo-list button{
+  cursor:pointer !important;
+}
+.calm-actions-grid button:active,
+.workspace-actions-grid button:active,
+.workspace-card button:active,
+.guest-mini-card button:active,
+.todo-list button:active{
+  transform:scale(.99) !important;
+}
