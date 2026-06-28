@@ -124,6 +124,7 @@ let currentUser = JSON.parse(localStorage.getItem('dawaa_user')||'null');
 let cmdOpen = false;
 let selectedGuestIds = new Set();
 let guestStatusFilter = '';
+let guestViewMode = localStorage.getItem('dawaa_guest_view_mode') || 'cards';
 let sendModeState = 'selected';
 const env = {
   supabaseUrl: localStorage.getItem('DAWAA_SUPABASE_URL') || '',
@@ -499,12 +500,16 @@ function adminGuests(){
  ${bookingSelector()}
  <input id="guestImportFile" type="file" accept=".csv,.txt,.xlsx,.xls" style="display:none" onchange="importGuestsFile(event)">
  <div class="filter-bar compact-filter"><input class="search" id="guestSearch" oninput="renderGuestListOnly()" placeholder="ابحثي بالاسم أو الرقم"><div class="filter-chips"><button onclick="filterGuestsByStatus('')">الكل</button><button onclick="filterGuestsByStatus('confirmed')">حاضر</button><button onclick="filterGuestsByStatus('pending')">لم يؤكد</button><button onclick="filterGuestsByStatus('declined')">معتذر</button><button onclick="filterGuestsByStatus('sent')">مرسل</button></div></div>
+ <div class="guest-view-toolbar"><span>طريقة العرض</span>${guestViewToggle()}</div>
  <div class="bulk-bar"><b id="bulkCount">${selectedGuestIds.size} محدد</b><button class="btn btn-secondary" onclick="selectAllVisibleGuests()">تحديد الظاهر</button><button class="btn btn-secondary" onclick="clearGuestSelection()">إلغاء التحديد</button><button class="btn btn-primary" onclick="sendSelectedGuests()">إرسال المحددين</button><button class="btn btn-secondary" onclick="bulkSetStatus('confirmed')">تحويل إلى حاضر</button><button class="btn btn-secondary" onclick="bulkSetStatus('pending')">تحويل إلى لم يؤكد</button><button class="btn btn-ghost" onclick="deleteSelectedGuests()">حذف المحددين</button></div>
  <div id="guestTable">${guestTable(guests, true)}</div>`, 'guests');
  setTimeout(()=>loadGuestsFromServer({silent:true,force:true}), 80);
 }
 function filteredGuestsList(){const q=$('#guestSearch')?.value||''; const bookingId=getSelectedBookingId(); return db.guests.filter(g=>(!bookingId||g.bookingId===bookingId)&&(!guestStatusFilter||g.rsvpStatus===guestStatusFilter)&&(g.guestName.includes(q)||g.phoneNumber.includes(q)))}
-function guestTable(guests, selectable=false){return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="openGuestDrawer('${g.id}')">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml((g.guestName||'ض')[0])}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`}
+function guestTable(guests, selectable=false){
+ if(guestViewMode === 'table') return guestTableRows(guests, selectable);
+ return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="openGuestDrawer('${g.id}')">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml((g.guestName||'ض')[0])}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`
+}
 function statusBadge(st){const map={pending:['لم يؤكد','b-orange'],confirmed:['حاضر','b-green'],declined:['معتذر','b-red'],sent:['مرسل','b-blue'],delivered:['تم التسليم','b-purple'],read:['مقروء','b-purple'],failed:['فشل','b-red'],'checked-in':['دخل','b-green']}; const m=map[st]||map.pending; return `<span class="badge ${m[1]}">${m[0]}</span>`}
 function cardStatusSummary(g){
  const total=Math.max(1, Number(g.cardsCount||1));
@@ -528,6 +533,53 @@ function cardStatusSummary(g){
 function cardStatusChip(g){
  const s=cardStatusSummary(g);
  return `<div class="card-status-chip ${s.cls}"><b>${escapeHtml(s.label)}</b><small>${escapeHtml(s.sub)}</small></div>`;
+}
+function setGuestViewMode(mode){
+ guestViewMode = mode === 'table' ? 'table' : 'cards';
+ localStorage.setItem('dawaa_guest_view_mode', guestViewMode);
+ renderGuestListOnly();
+}
+function guestViewToggle(){
+ return `<div class="view-toggle" role="group" aria-label="طريقة عرض الضيوف">
+   <button class="${guestViewMode==='cards'?'active':''}" onclick="setGuestViewMode('cards')" type="button">▦ مربعات</button>
+   <button class="${guestViewMode==='table'?'active':''}" onclick="setGuestViewMode('table')" type="button">☰ جدول</button>
+ </div>`;
+}
+function guestAttendanceText(g){
+ const total=Number(g.cardsCount||1);
+ const c=Number(g.confirmedCount||0);
+ const d=Number(g.declinedCount||0);
+ const p=Math.max(0,total-c-d);
+ return `<span class="attendance-inline"><b class="ok">${c}</b><span>/</span><b>${total}</b><small>معتذر ${d} • متبقي ${p}</small></span>`;
+}
+function guestTableRows(guests, selectable=false){
+ if(!guests.length) return `<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`;
+ return `<div class="sheet-wrap"><table class="guest-sheet">
+   <thead><tr>
+    <th>${selectable?'تحديد':''}</th>
+    <th>الاسم</th>
+    <th>الهاتف</th>
+    <th>البطاقات</th>
+    <th>الحالة</th>
+    <th>الحضور</th>
+    <th>المناسبة</th>
+    <th>إجراءات</th>
+   </tr></thead>
+   <tbody>${guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<tr onclick="openGuestDrawer('${g.id}')">
+    <td onclick="event.stopPropagation()">${selectable?`<input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')">`:''}</td>
+    <td><strong>${escapeHtml(g.guestName)}</strong><small>${escapeHtml(g.shortCode||'')}</small></td>
+    <td dir="ltr">${escapeHtml(g.phoneNumber||'')}</td>
+    <td>${Number(g.cardsCount||1)}</td>
+    <td>${statusBadge(g.rsvpStatus)}</td>
+    <td>${guestAttendanceText(g)}</td>
+    <td>${escapeHtml(b?.eventName||'')}</td>
+    <td class="sheet-actions" onclick="event.stopPropagation()">
+      <button class="btn btn-secondary btn-mini" onclick="editGuest('${g.id}')">تعديل</button>
+      <button class="btn btn-secondary btn-mini" onclick="sendOne('${g.id}')">إرسال</button>
+      <button class="btn btn-ghost btn-mini" onclick="deleteGuest('${g.id}')">حذف</button>
+    </td>
+   </tr>`}).join('')}</tbody>
+ </table></div>`;
 }
 function filterGuests(){renderGuestListOnly()}
 function filterGuestsByStatus(st){guestStatusFilter=st; renderGuestListOnly()}
