@@ -60,7 +60,7 @@ function mergeGuestsFromServer(remoteGuests=[]){
  const map=new Map(local.map(g=>[keyOf(g),g]));
  let changed=false;
  (remoteGuests||[]).forEach(raw=>{
-  const r=normalizeRemoteGuest(raw,selected); if(isBadGuestRecord(r)) return; if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const identityKey=guestExactImportKey(r); const duplicateByIdentity=[...map.values()].find(x=>guestExactImportKey(x)===identityKey); const old=map.get(k)||duplicateByIdentity;
+  const r=normalizeRemoteGuest(raw,selected); if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const old=map.get(k);
   if(!old){map.set(k,r); changed=true}
   else{const merged={...old,...r,id:old.id||r.id,bookingId:r.bookingId||old.bookingId||selected}; if(JSON.stringify(merged)!==JSON.stringify(old)){map.set(k,merged); changed=true}}
  });
@@ -772,11 +772,14 @@ function adminGuests(){
  const selectedBooking=getSelectedBookingId();
  const booking=db.bookings.find(b=>b.id===selectedBooking);
  const guests=filteredGuestsList();
- adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-secondary danger-soft" onclick="cleanupBadGuests()">تنظيف التالف/المكرر</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
+ adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
  ${bookingSelector()}
  ${metaTemplatePanel(booking||{})}
  ${attachImageGuide()}
  <input id="guestImportFile" type="file" accept=".csv,.txt,.xlsx,.xls" style="display:none" onchange="importGuestsFile(event)">
+ ${listCategoryBar()}
+ ${listCategoryBar()}
+ ${listCategoryBar()}
  ${listCategoryBar()}
  <div class="filter-bar compact-filter"><input class="search" id="guestSearch" oninput="renderGuestListOnly()" placeholder="ابحثي بالاسم أو الرقم"><div class="filter-chips"><button onclick="filterGuestsByStatus('')">الكل</button><button onclick="filterGuestsByStatus('confirmed')">حاضر</button><button onclick="filterGuestsByStatus('pending')">لم يؤكد</button><button onclick="filterGuestsByStatus('declined')">معتذر</button><button onclick="filterGuestsByStatus('sent')">مرسل</button></div></div>
  <div class="guest-view-toolbar"><span>طريقة العرض</span>${guestViewToggle()}</div>
@@ -787,12 +790,12 @@ function adminGuests(){
 function filteredGuestsList(){
  const q=$('#guestSearch')?.value||'';
  const bookingId=getSelectedBookingId();
- const base=(db.guests||[]).filter(g=>
+ removeVisibleDuplicateGuests();
+ return (db.guests||[]).filter(g=>
    (!bookingId||g.bookingId===bookingId) &&
    (!guestStatusFilter||g.rsvpStatus===guestStatusFilter) &&
    ((g.guestName||'').includes(q)||(g.phoneNumber||'').includes(q))
  );
- return safeVisibleGuests(base);
 }
 function guestTable(guests, selectable=false){
  if(guestViewMode === 'table') return guestTableRows(guests, selectable);
@@ -980,14 +983,7 @@ function isLikelyHeaderRow(row=[]){
 }
 
 
-
-
-
-
-async 
-
-
-function normalizeGuestIdentity(v=''){
+function normalizeGuestImportName(v=''){
   return String(v||'')
     .trim()
     .toLowerCase()
@@ -997,94 +993,26 @@ function normalizeGuestIdentity(v=''){
     .replace(/ة/g,'ه')
     .replace(/\s+/g,' ');
 }
-function guestExactImportKey(g){
+function importGuestUniqueKey(g){
+  const phone = cleanImportedPhone ? cleanImportedPhone(g.phoneNumber||g.phone_number||g.phone||'') : String(g.phoneNumber||'').replace(/\D/g,'');
   return [
     String(g.bookingId||getSelectedBookingId()||''),
-    normalizeGuestIdentity(g.guestName||g.guest_name||g.name||''),
-    cleanImportedPhone(g.phoneNumber||g.phone_number||g.phone||'')
+    normalizeGuestImportName(g.guestName||g.guest_name||g.name||''),
+    phone
   ].join('|');
 }
-function isCorruptedGuestName(name=''){
-  const s=String(name||'').trim();
-  if(!s || s==='-' || s.length<2) return true;
-
-  // Literal question marks / mojibake / unknown replacement chars
-  if(/[؟?]{2,}/.test(s)) return true;
-  if(/[�□■]/.test(s)) return true;
-
-  const arabic=(s.match(/[\u0600-\u06FF]/g)||[]).length;
-  const latin=(s.match(/[a-zA-Z]/g)||[]).length;
-  const digits=(s.match(/\d/g)||[]).length;
-  const spaces=(s.match(/\s/g)||[]).length;
-  const useful=arabic+latin+digits+spaces;
-  const symbols=(s.match(/[^\u0600-\u06FFa-zA-Z0-9\s]/g)||[]).length;
-
-  // Names imported from broken XLSX usually become symbol-heavy strings like ÐPK□□ or @Q=...
-  if(arabic===0 && symbols>=2) return true;
-  if(symbols > useful) return true;
-  if(arabic===0 && latin===0 && symbols>0) return true;
-
-  return false;
-}
-function isBadGuestRecord(g){
-  const phone=cleanImportedPhone(g.phoneNumber||g.phone_number||g.phone||'');
-  if(isCorruptedGuestName(g.guestName||g.guest_name||g.name)) return true;
-  if(!phone) return true;
-  // Oman numbers should be 968 + 8 digits. If it starts with 968 but is shorter, it is corrupt.
-  if(phone.startsWith('968') && phone.length < 11) return true;
-  // Very short phones are invalid.
-  if(phone.length < 8) return true;
-  return false;
-}
-function safeVisibleGuests(list){
+function removeVisibleDuplicateGuests(){
   const seen=new Set();
   const out=[];
-  for(const g of (list||[])){
-    if(isBadGuestRecord(g)) continue;
-    const key=guestExactImportKey(g);
-    if(seen.has(key)) continue;
+  let changed=false;
+  for(const g of (db.guests||[])){
+    const key=importGuestUniqueKey(g);
+    if(seen.has(key)){ changed=true; continue; }
     seen.add(key);
     out.push(g);
   }
-  return out;
-}
-async function cleanupBadGuests(){
-  const bookingId=getSelectedBookingId();
-  if(!bookingId) return showToast('اختاري مناسبة أولاً');
-
-  const guests=(db.guests||[]).filter(g=>g.bookingId===bookingId);
-  const seen=new Set();
-  const bad=[];
-  const good=[];
-
-  for(const g of guests){
-    const key=guestExactImportKey(g);
-    if(isBadGuestRecord(g) || seen.has(key)){
-      bad.push(g);
-    }else{
-      seen.add(key);
-      good.push(g);
-    }
-  }
-
-  if(!bad.length) return showToast('مافي ضيوف تالفين أو مكررين للتنظيف');
-  if(!confirm(`سيتم حذف ${bad.length} ضيف تالف/مكرر نهائياً من Supabase. متأكدة؟`)) return;
-
-  const badLocalIds=new Set(bad.map(g=>g.id));
-  const badDbIds=new Set(bad.map(g=>g.dbGuestId || String(g.id||'').replace('remote_','')).filter(Boolean));
-  db.guests=(db.guests||[]).filter(g=>!badLocalIds.has(g.id) && !badDbIds.has(g.dbGuestId));
-  render();
-
-  showToast(`جاري حذف ${bad.length} ضيف تالف/مكرر من Supabase`);
-  for(const g of bad){
-    if(window.deleteGuestFromServer) await deleteGuestFromServer(g);
-  }
-
-  await loadGuestsFromServer({silent:true,force:true});
-  // Apply local hard filter again after sync
-  db.guests = (db.guests||[]).filter(g=>!(g.bookingId===bookingId && isBadGuestRecord(g)));
-  render();
-  showToast('تم تنظيف القائمة');
+  if(changed) db.guests=out;
+  return changed;
 }
 
 async function importGuestsFile(e){
@@ -1095,10 +1023,11 @@ async function importGuestsFile(e){
   const rows=await rowsFromImportedFile(file, buffer);
   const bookingId=getSelectedBookingId() || db.bookings[0]?.id;
   const category=listCategoryValue();
+
   let added=0;
   let skipped=0;
-  const current=db.guests;
-  const existingKeys=new Set(safeVisibleGuests(current).map(guestExactImportKey));
+  const existingKeys=new Set((db.guests||[]).map(importGuestUniqueKey));
+  const batchKeys=new Set();
   const newGuests=[];
 
   let startIndex=0;
@@ -1130,20 +1059,34 @@ async function importGuestsFile(e){
         listCategory:category,
         source:currentUser?.role==='client'?'client':'admin'
       };
-      if(isBadGuestRecord(g)){ skipped++; continue; }
-      const key=guestExactImportKey(g);
-      if(existingKeys.has(key)){ skipped++; continue; }
-      existingKeys.add(key);
-      current.push(g);
+
+      const key=importGuestUniqueKey(g);
+      if(existingKeys.has(key) || batchKeys.has(key)){
+        skipped++;
+        continue;
+      }
+
+      batchKeys.add(key);
       newGuests.push(g);
       added++;
     }
   }
 
-  db.guests=current;
-  showToast(`تم استيراد ${added} ضيف ضمن ${listCategoryLabel(category)}${skipped?`، وتم تجاهل ${skipped} مكرر`:''}`);
+  if(!newGuests.length){
+    showToast(skipped ? `لم يتم إضافة ضيوف جدد، تم تجاهل ${skipped} مكرر` : 'لم يتم العثور على ضيوف صالحين في الملف');
+    return;
+  }
+
+  showToast(`جاري حفظ ${added} ضيف...`);
+  const saved = await saveGuestsToServer(newGuests,{silent:true});
+
+  // مهم: لا نضيف الضيوف محليًا قبل المزامنة حتى لا يتكرروا مرتين.
+  // بعد الحفظ نسحب النسخة الرسمية من Supabase.
+  await loadGuestsFromServer({silent:true,force:true});
+  removeVisibleDuplicateGuests();
   render();
-  if(newGuests.length) saveGuestsToServer(newGuests,{silent:true}).then(()=>loadGuestsFromServer({silent:true,force:true}));
+
+  showToast(`تم استيراد ${added} ضيف${skipped?`، وتم تجاهل ${skipped} مكرر`:''}`);
  }catch(err){
   console.error('[importGuestsFile]',err);
   showToast(err.message || 'تعذر قراءة الملف. استخدمي XLSX أو CSV UTF-8');
