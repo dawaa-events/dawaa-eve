@@ -790,7 +790,6 @@ function adminGuests(){
 function filteredGuestsList(){
  const q=$('#guestSearch')?.value||'';
  const bookingId=getSelectedBookingId();
- removeVisibleDuplicateGuests();
  return (db.guests||[]).filter(g=>
    (!bookingId||g.bookingId===bookingId) &&
    (!guestStatusFilter||g.rsvpStatus===guestStatusFilter) &&
@@ -1789,7 +1788,7 @@ function calcPrice(){
    else hint.textContent='كود الخصم غير صحيح';
  }
 }
-function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if(location.hash.includes('/admin') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true,force:true}).then(changed=>{if(changed && (location.hash.includes('/client') || location.hash.includes('/admin/send') || location.hash.includes('/admin/guests'))) render();}),180); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
+function afterRender(){if($('#guestRange')) calcPrice(); safeIcons(); updateLiveCountdowns(); if(!window.__dawaaCountdownTimer){window.__dawaaCountdownTimer=setInterval(updateLiveCountdowns,1000)} if(location.hash.includes('/admin') || location.hash.includes('/client')) setTimeout(()=>loadGuestsFromServer({silent:true,force:true}),180); const board=$('#storyBoard'); if(board) setStory(0); $$('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')})); animateCounters();}
 function animateCounters(){$$('[data-count]').forEach(el=>{const target=Number(el.dataset.count); if(!target)return; let n=0; const step=Math.max(1,Math.floor(target/30)); const plus=el.textContent.includes('+'); const percent=el.textContent.includes('%'); const int=setInterval(()=>{n+=step;if(n>=target){n=target;clearInterval(int)}el.textContent=n.toLocaleString('en-US')+(plus?'+':'')+(percent?'%':'')},22)})}
 window.addEventListener('hashchange',render); window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key?.toString().toLowerCase()==='k'){e.preventDefault();toggleCommand(true)} if(e.key==='Escape'){toggleCommand(false);closeDrawer();$$('.modal').forEach(m=>m.classList.remove('open'))} if(currentUser?.role==='admin' && e.key?.toString().toLowerCase()==='n')openEventModal();});
 render();
