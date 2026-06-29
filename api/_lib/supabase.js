@@ -163,12 +163,34 @@ async function updateGuestByPhone(phoneNumber, update) {
   return updateGuest(guest.id, update);
 }
 
+
+async function deleteGuest(id) {
+  if (!isConfigured() || !id) return null;
+  if (!isUuid(id)) {
+    console.warn('[Supabase] Skipping deleteGuest for non-UUID id:', id);
+    return null;
+  }
+  try {
+    await request(`/guests?id=eq.${eq(id)}`, {
+      method: 'DELETE',
+      headers: { Prefer: 'return=minimal' }
+    });
+    return { id, deleted: true };
+  } catch (error) {
+    console.error('[Supabase] deleteGuest failed', error.message || error);
+    return null;
+  }
+}
+
 async function ensureGuestExists(guest = {}, booking = {}) {
   if (!isConfigured()) return null;
   const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
   if (!phoneNumber) return null;
 
-  // 1) If frontend supplied a real UUID, update that row.
+  // Important:
+  // Do NOT merge guests by phone number.
+  // In real events, multiple different guest names may share the same phone number.
+  // We only update an existing row when the frontend supplies a real Supabase UUID.
   if (isUuid(guest.id)) {
     const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
     const updated = await updateGuest(guest.id, {
@@ -176,26 +198,27 @@ async function ensureGuestExists(guest = {}, booking = {}) {
       pendingCount: cardsCount,
       rsvpStatus: guest.rsvpStatus || 'pending',
       guestName: guest.guestName || guest.guest_name || guest.name,
-      phoneNumber
+      phoneNumber,
+      notes: guest.notes || null
     });
     if (updated) return updated;
   }
 
-  // 2) Reuse row by phone.
-  const existing = await getGuestByPhone(phoneNumber);
-  if (existing?.id) {
-    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || existing.cardsCount || 1);
-    return updateGuest(existing.id, {
+  // If this guest was already synced before, update that row.
+  if (isUuid(guest.dbGuestId || guest.db_guest_id)) {
+    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
+    const updated = await updateGuest(guest.dbGuestId || guest.db_guest_id, {
       cardsCount,
       pendingCount: cardsCount,
       rsvpStatus: guest.rsvpStatus || 'pending',
-      guestName: guest.guestName || guest.guest_name || guest.name || existing.guestName,
+      guestName: guest.guestName || guest.guest_name || guest.name,
       phoneNumber,
-      notes: guest.notes || existing.notes || null
-    }) || existing;
+      notes: guest.notes || null
+    });
+    if (updated) return updated;
   }
 
-  // 3) Insert new guest into Supabase so the WhatsApp webhook can find it later.
+  // Otherwise always insert a new row, even if phone number already exists.
   const payload = toDbGuestInsert({ ...guest, phoneNumber }, booking);
   const data = await request('/guests?select=*', {
     method: 'POST',
@@ -275,6 +298,7 @@ module.exports = {
   getSupabaseAdmin,
   updateGuest,
   updateGuestByPhone,
+  deleteGuest,
   ensureGuestExists,
   listGuests,
   getGuestByPhone,

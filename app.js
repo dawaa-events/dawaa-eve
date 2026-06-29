@@ -27,6 +27,32 @@ function normalizeRemoteGuest(g, fallbackBookingId=''){
   checkedIn:Boolean(g.checkedIn||g.checked_in_at)
  };
 }
+
+function getDeletedGuestIds(){
+  try{return JSON.parse(localStorage.getItem('dawaa_deleted_guest_ids')||'[]')}catch(e){return[]}
+}
+function rememberDeletedGuestId(id){
+  if(!id)return;
+  const list=[...new Set([...getDeletedGuestIds(), String(id)])].slice(-1000);
+  localStorage.setItem('dawaa_deleted_guest_ids', JSON.stringify(list));
+}
+function isDeletedGuestId(id){
+  return id && getDeletedGuestIds().includes(String(id));
+}
+async function deleteGuestFromServer(guest){
+  const dbId = guest?.dbGuestId || (String(guest?.id||'').startsWith('remote_') ? String(guest.id).replace('remote_','') : guest?.id);
+  if(!dbId) return false;
+  rememberDeletedGuestId(dbId);
+  try{
+    const res=await fetch('/api/guests-sync?id='+encodeURIComponent(dbId),{method:'DELETE',cache:'no-store'});
+    if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+    return true;
+  }catch(e){
+    console.warn('[deleteGuestFromServer]',e);
+    return false;
+  }
+}
+
 function mergeGuestsFromServer(remoteGuests=[]){
  const selected=getSelectedBookingId()||db.bookings[0]?.id||'';
  const local=db.guests||[];
@@ -34,7 +60,7 @@ function mergeGuestsFromServer(remoteGuests=[]){
  const map=new Map(local.map(g=>[keyOf(g),g]));
  let changed=false;
  (remoteGuests||[]).forEach(raw=>{
-  const r=normalizeRemoteGuest(raw,selected); const k=keyOf(r); const old=map.get(k);
+  const r=normalizeRemoteGuest(raw,selected); if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const old=map.get(k);
   if(!old){map.set(k,r); changed=true}
   else{const merged={...old,...r,id:old.id||r.id,bookingId:r.bookingId||old.bookingId||selected}; if(JSON.stringify(merged)!==JSON.stringify(old)){map.set(k,merged); changed=true}}
  });
@@ -1413,7 +1439,22 @@ if(editId){
  // Sync in background so mobile/other browsers see the same guest.
  saveGuestsToServer(savedGuest, {silent:true}).then(()=>loadGuestsFromServer({silent:true,force:true}));
 }
-function deleteGuest(id){if(!confirm('حذف الضيف؟'))return; db.guests=db.guests.filter(g=>g.id!==id); showToast('تم الحذف'); render()}
+function deleteGuest(id){
+ if(!confirm('حذف الضيف؟'))return;
+ const guest=db.guests.find(g=>g.id===id || g.dbGuestId===id);
+ if(guest){
+   rememberDeletedGuestId(guest.dbGuestId || String(guest.id||'').replace('remote_',''));
+ }
+ db.guests=db.guests.filter(g=>g.id!==id && g.dbGuestId!==id);
+ showToast('تم الحذف');
+ render();
+ if(guest){
+   deleteGuestFromServer(guest).then(ok=>{
+     if(ok) showToast('تم حذف الضيف نهائياً من المزامنة');
+     else showToast('تم الحذف محلياً، لكن تعذر حذفه من Supabase');
+   });
+ }
+}
 function openEventDrawer(id){openEventWorkspace(id)}
 function openEventWorkspace(id){setSelectedBookingId(id); go('/admin/workspace')}
 
