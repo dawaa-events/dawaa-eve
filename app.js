@@ -30,7 +30,7 @@ function normalizeRemoteGuest(g, fallbackBookingId=''){
 function mergeGuestsFromServer(remoteGuests=[]){
  const selected=getSelectedBookingId()||db.bookings[0]?.id||'';
  const local=db.guests||[];
- const keyOf=g=>String(g.dbGuestId||'') || (String(g.bookingId||selected)+'|'+normalizeUrgentPhone(g.phoneNumber||''));
+ const keyOf=g=>String(g.dbGuestId||g.id||'') || (String(g.bookingId||selected)+'|'+normalizeUrgentPhone(g.phoneNumber||'')+'|'+String(g.guestName||''));
  const map=new Map(local.map(g=>[keyOf(g),g]));
  let changed=false;
  (remoteGuests||[]).forEach(raw=>{
@@ -393,7 +393,9 @@ function normalizedPhoneForKey(v=''){
   return phone;
 }
 function guestKey(g){
-  return String(g.dbGuestId || g.id || '') + '|' + (g.bookingId || g.booking_id || '') + '|' + normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone);
+  const id = g.dbGuestId || g.id || g.localId || g.local_id || '';
+  if (id) return 'id|' + String(id);
+  return 'anon|' + (g.bookingId || g.booking_id || '') + '|' + normalizedPhoneForKey(g.phoneNumber || g.phone_number || g.phone) + '|' + String(g.guestName || g.guest_name || g.name || '');
 }
 function normalizeRemoteGuest(g, fallbackBookingId=''){
   const cardsCount = Math.max(1, Number(g.cardsCount ?? g.cards_count ?? g.cards ?? 1) || 1);
