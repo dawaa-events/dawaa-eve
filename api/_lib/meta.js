@@ -115,4 +115,50 @@ async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
   });
 }
 
-module.exports = { sendTemplate, sendWeddingInvitation, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
+
+function imageHeaderComponent(imageUrl) {
+  if (!imageUrl) return null;
+  return {
+    type: 'header',
+    parameters: [
+      {
+        type: 'image',
+        image: { link: imageUrl }
+      }
+    ]
+  };
+}
+
+async function sendTemplateBySelection(params = {}) {
+  const templateName = params.templateName || params.template || 'dawaa_wedding_invitation';
+  const languageCode = params.languageCode || defaultLanguage;
+  const imageUrl = params.imageUrl || params.invitationImageUrl || params.cardUrl || '';
+
+  // Invitation templates with variables
+  if (templateName === 'dawaa_wedding_invitation' || templateName === 'dawaa_wedding_invitation_image') {
+    const components = invitationComponents(params, templateName.includes('_image') ? 'named' : (params.parameterMode || templateParameterMode || 'numbered'));
+    const header = templateName.includes('_image') ? imageHeaderComponent(imageUrl) : null;
+    const finalComponents = header ? [header, ...components] : components;
+    return sendTemplate(params.phoneNumber, templateName, finalComponents, languageCode);
+  }
+
+  // Entry card: image header + two body variables if supplied
+  if (templateName === 'dawaa_entry_card') {
+    const components = [];
+    const header = imageHeaderComponent(imageUrl);
+    if (header) components.push(header);
+    components.push({
+      type: 'body',
+      parameters: [
+        { type: 'text', text: params.receptionTime || params.reception_time || '-' },
+        { type: 'text', text: params.locationLink || params.location_link || '-' }
+      ]
+    });
+    return sendTemplate(params.phoneNumber, templateName, components, languageCode);
+  }
+
+  // Reminder / confirmed / declined usually have no variables
+  return sendTemplate(params.phoneNumber, templateName, [], languageCode);
+}
+
+module.exports = { sendTemplate, sendWeddingInvitation, sendTemplateBySelection, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
