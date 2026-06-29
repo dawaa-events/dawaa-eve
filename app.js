@@ -46,25 +46,47 @@ function isDeletedGuestId(id){
 async function deleteGuestFromServer(guest){
   const dbId = guest?.dbGuestId || (String(guest?.id||'').startsWith('remote_') ? String(guest.id).replace('remote_','') : guest?.id);
   if(dbId) rememberDeletedGuestId(dbId);
-  let ok=false;
-  try{
-    if(dbId){
-      const res=await fetch('/api/guests-sync?id='+encodeURIComponent(dbId),{method:'DELETE',cache:'no-store'});
-      ok=res.ok;
-    }
-  }catch(e){console.warn('[deleteGuestFromServer:id]',e);}
-  // Always also delete by identity to remove old duplicated rows that may have old RSVP state.
+  rememberDeletedGuestKey(guest);
   try{
     const booking=db.bookings.find(b=>b.id===(guest?.bookingId||getSelectedBookingId()))||{};
-    const res=await fetch('/api/guests-sync',{
+    const url='/api/guests-sync'+(dbId?('?id='+encodeURIComponent(dbId)):'');
+    const res=await fetch(url,{
       method:'DELETE',
       cache:'no-store',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({booking,guest})
     });
-    ok = ok || res.ok;
-  }catch(e){console.warn('[deleteGuestFromServer:identity]',e);}
-  return ok;
+    return res.ok;
+  }catch(e){
+    console.warn('[deleteGuestFromServer:force]',e);
+    return false;
+  }
+}
+
+
+function guestIdentityKey(g){
+  return [
+    String(g?.bookingId||getSelectedBookingId()||''),
+    String(g?.guestName||'').trim().toLowerCase().replace(/\s+/g,' '),
+    String(g?.phoneNumber||'').replace(/\D/g,'')
+  ].join('|');
+}
+function getDeletedGuestKeys(){
+  try{return JSON.parse(localStorage.getItem('dawaa_deleted_guest_keys')||'[]')}catch(e){return[]}
+}
+function rememberDeletedGuestKey(g){
+  const key=guestIdentityKey(g);
+  if(!key || key.includes('||')) return;
+  const list=[...new Set([...getDeletedGuestKeys(), key])].slice(-2000);
+  localStorage.setItem('dawaa_deleted_guest_keys', JSON.stringify(list));
+}
+function isDeletedGuestKey(g){
+  return getDeletedGuestKeys().includes(guestIdentityKey(g));
+}
+function forgetDeletedGuestKey(g){
+  const key=guestIdentityKey(g);
+  const list=getDeletedGuestKeys().filter(x=>x!==key);
+  localStorage.setItem('dawaa_deleted_guest_keys', JSON.stringify(list));
 }
 
 function mergeGuestsFromServer(remoteGuests=[]){
@@ -74,7 +96,7 @@ function mergeGuestsFromServer(remoteGuests=[]){
  const map=new Map(local.map(g=>[keyOf(g),g]));
  let changed=false;
  (remoteGuests||[]).forEach(raw=>{
-  const r=normalizeRemoteGuest(raw,selected); if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const old=map.get(k);
+  const r=normalizeRemoteGuest(raw,selected); if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))||isDeletedGuestKey(r)) return; const k=keyOf(r); const old=map.get(k);
   if(!old){map.set(k,r); changed=true}
   else{const merged={...old,...r,id:old.id||r.id,bookingId:r.bookingId||old.bookingId||selected}; if(JSON.stringify(merged)!==JSON.stringify(old)){map.set(k,merged); changed=true}}
  });
@@ -97,7 +119,7 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
 }
 async function saveGuestsToServer(guests=[], {silent=true}={}){
  try{
-  const list=(Array.isArray(guests)?guests:[guests]).map(g=>g?.forceNew||g?.resetStatus?{...g,dbGuestId:null,db_guest_id:null,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number(g.cardsCount||1),metaMessageId:null,invitationSentAt:null,deliveredAt:null,readAt:null,repliedAt:null}:g); if(!list.filter(Boolean).length) return false;
+  const list=(Array.isArray(guests)?guests:[guests]).map(g=>{ if(g?.forceNew||g?.resetStatus) forgetDeletedGuestKey(g); return g?.forceNew||g?.resetStatus?{...g,dbGuestId:null,db_guest_id:null,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number(g.cardsCount||1),metaMessageId:null,invitationSentAt:null,deliveredAt:null,readAt:null,repliedAt:null}:g; }); if(!list.filter(Boolean).length) return false;
   const booking=db.bookings.find(b=>b.id===(list[0]?.bookingId||getSelectedBookingId()))||db.bookings[0]||{};
   const res=await fetch('/api/guests-sync',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({booking,guests:list})});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
@@ -857,17 +879,31 @@ async function applyEntryCardUrlsToGuests(){
   const bookingId=getSelectedBookingId();
   const base=getEntryCardBaseUrl(bookingId);
   if(!bookingId || !base) return showToast('ضعي رابط مجلد بطاقات الدخول أولاً');
-  const guests=db.guests.filter(g=>g.bookingId===bookingId);
+
+  let guests=(db.guests||[]).filter(g=>g.bookingId===bookingId);
+
+  // إذا ما فيه ترتيب محفوظ، احسبه تلقائياً من عدد البطاقات.
+  if(!guests.some(g=>Number(g.startOrder||g.orderNumber||0))){
+    guests=calculateOrderMetaForGuests(guests,bookingId);
+  }
+
   const updated=[];
   for(const g of guests){
     const start=Number(g.startOrder || g.orderNumber || 0);
     const count=Number(g.cardsCount||1);
     if(!start) continue;
     const meta=packEntryCardMeta(start,count,bookingId);
-    Object.assign(g,{...meta});
-    updated.push({...g,...meta});
+    Object.assign(g,{...meta,orderNumber:start,startOrder:start});
+    updated.push({...g,...meta,orderNumber:start,startOrder:start});
   }
+
   if(!updated.length) return showToast('لا يوجد ضيوف لديهم رقم ترتيب');
+
+  db.guests=(db.guests||[]).map(g=>{
+    const u=updated.find(x=>x.id===g.id || x.dbGuestId===g.dbGuestId);
+    return u||g;
+  });
+
   await saveGuestsToServer(updated,{silent:true});
   await loadGuestsFromServer({silent:true,force:true});
   render();
@@ -881,6 +917,45 @@ function useAutoEntryCardFolder(){
   localStorage.setItem('dawaa_entry_card_base_urls', JSON.stringify(all));
   showToast('تم اعتماد الرابط التلقائي للمجلد');
   render();
+}
+
+
+function sortGuestsForOrderRepair(list=[]){
+  return [...list].sort((a,b)=>{
+    const ao=Number(a.orderNumber||a.startOrder||0);
+    const bo=Number(b.orderNumber||b.startOrder||0);
+    if(ao && bo) return ao-bo;
+    if(ao) return -1;
+    if(bo) return 1;
+    return String(a.createdAt||a.id||'').localeCompare(String(b.createdAt||b.id||''));
+  });
+}
+function calculateOrderMetaForGuests(guests=[], bookingId=getSelectedBookingId()){
+  let cursor=1;
+  const ordered=sortGuestsForOrderRepair(guests);
+  return ordered.map(g=>{
+    const currentStart=Number(g.startOrder||g.orderNumber||0) || cursor;
+    const cards=Number(g.cardsCount||1)||1;
+    const meta=packEntryCardMeta(currentStart,cards,bookingId);
+    cursor=currentStart+cards;
+    return {...g,...meta,orderNumber:currentStart,startOrder:currentStart};
+  });
+}
+async function repairOrderNumbersForCurrentBooking(){
+  const bookingId=getSelectedBookingId();
+  if(!bookingId) return showToast('اختاري مناسبة أولاً');
+  const guests=(db.guests||[]).filter(g=>g.bookingId===bookingId);
+  if(!guests.length) return showToast('لا يوجد ضيوف لإصلاح الترتيب');
+  const repaired=calculateOrderMetaForGuests(guests,bookingId);
+  db.guests=(db.guests||[]).map(g=>{
+    const r=repaired.find(x=>x.id===g.id || x.dbGuestId===g.dbGuestId);
+    return r||g;
+  });
+  render();
+  await saveGuestsToServer(repaired,{silent:true});
+  await loadGuestsFromServer({silent:true,force:true});
+  render();
+  showToast(`تم إصلاح وحفظ ترتيب ${repaired.length} ضيف`);
 }
 
 function entryCardStoragePanel(booking={}){
@@ -910,7 +985,7 @@ function sortGuestsByOrder(list=[]){
 
 function guestTable(guests, selectable=false){
  if(guestViewMode === 'table') return guestTableRows(guests, selectable);
- return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="event.stopPropagation()">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml(g.orderNumber||((g.guestName||'ض')[0]))}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`
+ return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="event.stopPropagation()">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml(g.orderNumber||g.startOrder||((g.guestName||'ض')[0]))}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`
 }
 function statusBadge(st){const map={pending:['لم يؤكد','b-orange'],confirmed:['حاضر','b-green'],declined:['معتذر','b-red'],sent:['مرسل','b-blue'],delivered:['تم التسليم','b-purple'],read:['مقروء','b-purple'],failed:['فشل','b-red'],'checked-in':['دخل','b-green']}; const m=map[st]||map.pending; return `<span class="badge ${m[1]}">${m[0]}</span>`}
 function cardStatusSummary(g){
@@ -970,7 +1045,7 @@ function guestTableRows(guests, selectable=false){
    </tr></thead>
    <tbody>${guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<tr onclick="event.stopPropagation()">
     <td onclick="event.stopPropagation()">${selectable?`<input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')">`:''}</td>
-    <td><b>${g.orderNumber||'-'}</b></td>
+    <td><b>${g.orderNumber||g.startOrder||'-'}</b></td>
     <td><b>${g.orderNumber||g.startOrder||'-'}</b></td>
     <td><strong>${escapeHtml(g.guestName)}</strong><small>${escapeHtml(g.entryCardUrl?'بطاقة مرتبطة':(g.shortCode||''))}</small></td>
     <td dir="ltr">${escapeHtml(g.phoneNumber||'')}</td>
@@ -1829,11 +1904,12 @@ function deleteGuest(id){
  const guest=db.guests.find(g=>g.id===id || g.dbGuestId===id);
  if(guest){
    rememberDeletedGuestId(guest.dbGuestId || String(guest.id||'').replace('remote_',''));
+   rememberDeletedGuestKey(guest);
  }
- const identityKey = guest ? `${guest.bookingId}|${String(guest.guestName||'').trim()}|${String(guest.phoneNumber||'').replace(/\D/g,'')}` : '';
+ const identityKey = guest ? guestIdentityKey(guest) : '';
  db.guests=db.guests.filter(g=>{
    if(g.id===id || g.dbGuestId===id) return false;
-   if(guest && `${g.bookingId}|${String(g.guestName||'').trim()}|${String(g.phoneNumber||'').replace(/\D/g,'')}`===identityKey) return false;
+   if(guest && guestIdentityKey(g)===identityKey) return false;
    return true;
  });
  showToast('تم الحذف');
