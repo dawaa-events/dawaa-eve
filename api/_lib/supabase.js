@@ -42,6 +42,28 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
 
+
+function safeParseGuestNotes(notes) {
+  if (!notes) return { text: '', meta: {} };
+  if (typeof notes === 'object') return { text: notes.text || '', meta: notes };
+  try {
+    const parsed = JSON.parse(String(notes));
+    if (parsed && typeof parsed === 'object') return { text: parsed.text || parsed.notes || '', meta: parsed };
+  } catch (_) {}
+  return { text: String(notes || ''), meta: {} };
+}
+function packGuestNotes(guest = {}, existingNotes = '') {
+  const old = safeParseGuestNotes(existingNotes || guest.notes);
+  const meta = { ...old.meta };
+  const plainText = guest.notesText || guest.plainNotes || (typeof guest.notes === 'string' && !String(guest.notes).trim().startsWith('{') ? guest.notes : old.text || '');
+  if (plainText) meta.text = plainText;
+  if ('orderNumber' in guest || 'order_number' in guest) meta.orderNumber = Number(guest.orderNumber || guest.order_number || 0) || null;
+  if ('entryCardUrl' in guest || 'entry_card_url' in guest) meta.entryCardUrl = guest.entryCardUrl || guest.entry_card_url || null;
+  if ('entryCardUrls' in guest || 'entry_card_urls' in guest) meta.entryCardUrls = guest.entryCardUrls || guest.entry_card_urls || [];
+  if ('startOrder' in guest || 'start_order' in guest) meta.startOrder = Number(guest.startOrder || guest.start_order || 0) || null;
+  return JSON.stringify(meta);
+}
+
 function toDbGuestUpdate(update) {
   const out = {};
   if ('cardsCount' in update) out.cards_count = Number(update.cardsCount || 1);
@@ -57,7 +79,7 @@ function toDbGuestUpdate(update) {
   if ('readAt' in update) out.read_at = update.readAt;
   if ('repliedAt' in update) out.replied_at = update.repliedAt;
   if ('metaMessageId' in update) out.meta_message_id = update.metaMessageId;
-  if ('notes' in update) out.notes = update.notes;
+  if ('notes' in update || 'orderNumber' in update || 'order_number' in update || 'startOrder' in update || 'start_order' in update || 'entryCardUrl' in update || 'entry_card_url' in update || 'entryCardUrls' in update || 'entry_card_urls' in update) out.notes = packGuestNotes(update, update.notes);
   out.updated_at = new Date().toISOString();
   return out;
 }
@@ -74,7 +96,7 @@ function toDbGuestInsert(guest = {}, booking = {}) {
     declined_count: Number(guest.declinedCount || guest.declined_count || 0),
     pending_count: Number(guest.pendingCount || guest.pending_count || cardsCount),
     short_code: guest.shortCode || guest.short_code || null,
-    notes: guest.notes || null,
+    notes: packGuestNotes(guest) || null,
     updated_at: new Date().toISOString()
   };
 
@@ -87,6 +109,7 @@ function toDbGuestInsert(guest = {}, booking = {}) {
 
 function fromDbGuest(row) {
   if (!row) return null;
+  const parsedNotes = safeParseGuestNotes(row.notes);
   return {
     id: row.id,
     bookingId: row.booking_id,
@@ -103,7 +126,11 @@ function fromDbGuest(row) {
     readAt: row.read_at,
     repliedAt: row.replied_at,
     shortCode: row.short_code,
-    notes: row.notes
+    notes: parsedNotes.text || '',
+    orderNumber: parsedNotes.meta.orderNumber || parsedNotes.meta.order_number || null,
+    entryCardUrl: parsedNotes.meta.entryCardUrl || parsedNotes.meta.entry_card_url || null,
+    entryCardUrls: parsedNotes.meta.entryCardUrls || parsedNotes.meta.entry_card_urls || [],
+    startOrder: parsedNotes.meta.startOrder || parsedNotes.meta.start_order || parsedNotes.meta.orderNumber || null
   };
 }
 

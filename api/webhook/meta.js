@@ -1,6 +1,6 @@
 const { metaWebhookVerifyToken } = require('../_lib/config');
 const { normalizePhone } = require('../_lib/phone');
-const { sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection } = require('../_lib/meta');
+const { sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection, sendTemplateBySelection } = require('../_lib/meta');
 const { getGuestByPhone, getGuestByMetaMessageId, updateGuest, updateGuestByPhone, insertMessage, logTimeline, logWebhookEvent } = require('../_lib/supabase');
 
 function send(res, status, body) {
@@ -61,6 +61,39 @@ async function safeUpdateGuest(guest, phoneNumber, updates) {
   return updated;
 }
 
+
+
+async function sendEntryCardIfReady(guest, phoneNumber, context = {}) {
+  const confirmed = Number(context.confirmedCount ?? guest?.confirmedCount ?? 0);
+  const urls = Array.isArray(guest?.entryCardUrls) && guest.entryCardUrls.length
+    ? guest.entryCardUrls
+    : (guest?.entryCardUrl ? [guest.entryCardUrl] : []);
+  const selectedUrls = urls.slice(0, Math.max(0, confirmed));
+
+  if (!selectedUrls.length || confirmed <= 0) {
+    await logWebhookEvent('entry_card_not_sent', { phoneNumber, guestId: guest?.id, reason: !urls.length ? 'missing_entry_card_urls' : 'not_confirmed', startOrder: guest?.startOrder || guest?.orderNumber, confirmed });
+    return null;
+  }
+
+  const results = [];
+  for (let i = 0; i < selectedUrls.length; i++) {
+    const url = selectedUrls[i];
+    const result = await sendTemplateBySelection({
+      phoneNumber,
+      templateName: 'dawaa_entry_card',
+      imageUrl: url,
+      receptionTime: process.env.DAWAA_RECEPTION_TIME || context.receptionTime || '-',
+      locationLink: process.env.DAWAA_LOCATION_LINK || context.locationLink || '-',
+      languageCode: 'ar'
+    });
+    results.push({ url, result });
+  }
+
+  await logWebhookEvent('entry_cards_sent_after_confirmation', { phoneNumber, guestId: guest.id, startOrder: guest.startOrder || guest.orderNumber, confirmed, sent:selectedUrls.length, results });
+  await logTimeline(guest, 'entry_cards_sent', { startOrder: guest.startOrder || guest.orderNumber, confirmed, sent:selectedUrls.length, urls:selectedUrls }, 'meta');
+  return results;
+}
+
 async function processButton(message) {
   if (message.type === 'interactive' && message.interactive?.type === 'list_reply') return;
   const phoneNumber = normalizePhone(message.from);
@@ -100,6 +133,8 @@ async function processButton(message) {
   await logTimeline(guest, 'rsvp_confirmed', { confirmedCount: 1 }, 'meta');
   const confirmSend = await sendRsvpConfirmed(phoneNumber);
   await logWebhookEvent('rsvp_confirmed_template_sent', { phoneNumber, guestId: guest.id, result: confirmSend });
+  const freshGuest = { ...guest, confirmedCount: 1 };
+  await sendEntryCardIfReady(freshGuest, phoneNumber, { confirmedCount: 1 });
 }
 
 
@@ -123,6 +158,8 @@ async function processListReply(message) {
   await logTimeline(guest, 'rsvp_confirmed_count', { confirmedCount, declinedCount, cardsCount }, 'meta');
   const confirmSend = await sendRsvpConfirmed(phoneNumber);
   await logWebhookEvent('rsvp_confirmed_count_template_sent', { phoneNumber, guestId: guest.id, result: confirmSend });
+  const freshGuest = { ...guest, confirmedCount };
+  await sendEntryCardIfReady(freshGuest, phoneNumber, { confirmedCount });
 }
 
 

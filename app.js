@@ -961,6 +961,7 @@ function guestTableRows(guests, selectable=false){
    <tbody>${guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<tr onclick="event.stopPropagation()">
     <td onclick="event.stopPropagation()">${selectable?`<input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')">`:''}</td>
     <td><b>${g.orderNumber||'-'}</b></td>
+    <td><b>${g.orderNumber||g.startOrder||'-'}</b></td>
     <td><strong>${escapeHtml(g.guestName)}</strong><small>${escapeHtml(g.entryCardUrl?'بطاقة مرتبطة':(g.shortCode||''))}</small></td>
     <td dir="ltr">${escapeHtml(g.phoneNumber||'')}</td>
     <td>${Number(g.cardsCount||1)}</td>
@@ -1535,7 +1536,21 @@ async function sendOne(id){
  return apiSendGuests([g], 'دعوة');
 }
 
-function editGuest(id){const g=db.guests.find(x=>x.id===id); if(!g)return; openGuestModal(); setTimeout(()=>{ $('#gEditingId').value=g.id; $('#gBooking').value=g.bookingId; $('#gName').value=g.guestName; $('#gPhone').value=g.phoneNumber; if($('#gOrder')) $('#gOrder').value=g.orderNumber||''; $('#gCards').value=g.cardsCount; if($('#gCategory')) $('#gCategory').value=g.listCategory||'bride'; $('#guestModalTitle').textContent='تعديل ضيف'; },0)}
+function editGuest(id){
+ const g=db.guests.find(x=>x.id===id);
+ if(!g)return;
+ openGuestModal();
+ setTimeout(()=>{
+  $('#gEditingId').value=g.id;
+  $('#gBooking').value=g.bookingId;
+  if($('#gOrder')) $('#gOrder').value=g.orderNumber||g.startOrder||'';
+  $('#gName').value=g.guestName;
+  $('#gPhone').value=g.phoneNumber;
+  $('#gCards').value=g.cardsCount;
+  if($('#gCategory')) $('#gCategory').value=g.listCategory||'bride';
+  $('#guestModalTitle').textContent='تعديل ضيف';
+ },0)
+}
 function sendReminders(bid){showToast('تم إرسال التذكير للضيوف غير المؤكدين')}
 
 function uploadScreen(bid){let b=db.bookings; const x=b.find(e=>e.id===bid); if(x){x.screenUploaded=true;x.health=Math.min(100,(x.health||70)+5);db.bookings=b;} showToast('تم رفع الشاشة الترحيبية'); render()}
@@ -1714,41 +1729,90 @@ function setDemoRating(n){
 function eventModal(){return `<div class="modal" id="eventModal"><div class="modal-box"><h2>حجز جديد</h2><div class="form-row"><div class="field"><label>اسم العميل</label><input id="evClient"></div><div class="field"><label>رقم الهاتف</label><input id="evPhone"></div></div><div class="form-row"><div class="field"><label>اسم المناسبة</label><input id="evName"></div><div class="field"><label>التاريخ</label><input id="evDate" type="date"></div></div><div class="field"><label>القاعة</label><input id="evVenue"></div><button class="btn btn-primary" onclick="saveEvent()">حفظ الحجز</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">إغلاق</button></div></div>`}
 function openEventModal(){$('#eventModal').classList.add('open')}
 function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); render()}
-function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>اسم الضيف</label><input id="gName"></div><div class="field"><label>الهاتف</label><input id="gPhone"></div></div><div class="form-row"><div class="field"><label>رقم الترتيب</label><input id="gOrder" type="number" min="1" placeholder="مثال: 1"></div><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div></div><div class="form-row"><div class="field"><label>تصنيف القائمة</label><select id="gCategory"><option value="bride">قائمة العروس</option><option value="groom">قائمة المعرس</option><option value="edited">قائمة معدلة</option><option value="backup">قائمة احتياط</option></select></div></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
-function openGuestModal(){const m=$('#guestModal'); if(m){m.classList.add('open'); $('#guestModalTitle').textContent='إضافة ضيف'; $('#gEditingId').value=''; $('#gName').value=''; $('#gPhone').value=''; if($('#gOrder')) $('#gOrder').value=String((db.guests.filter(g=>g.bookingId===getSelectedBookingId()).reduce((m,g)=>Math.max(m,Number(g.orderNumber||0)),0)+1)||''); $('#gCards').value='1'; if($('#gBooking')) $('#gBooking').value=getSelectedBookingId(); if($('#gCategory')) $('#gCategory').value=listCategoryValue();}}
+function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>رقم الترتيب</label><input id="gOrder" type="number" min="1" placeholder="مثال: 1"></div><div class="field"><label>اسم الضيف</label><input id="gName"></div></div><div class="form-row"><div class="field"><label>الهاتف</label><input id="gPhone"></div><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div></div><div class="form-row"><div class="field"><label>تصنيف القائمة</label><select id="gCategory"><option value="bride">قائمة العروس</option><option value="groom">قائمة المعرس</option><option value="edited">قائمة معدلة</option><option value="backup">قائمة احتياط</option></select></div></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
+function openGuestModal(){
+ const m=$('#guestModal');
+ if(m){
+  m.classList.add('open');
+  $('#guestModalTitle').textContent='إضافة ضيف';
+  $('#gEditingId').value='';
+  $('#gName').value='';
+  $('#gPhone').value='';
+  $('#gCards').value='1';
+  const nextOrder=(db.guests||[]).filter(g=>g.bookingId===getSelectedBookingId()).reduce((m,g)=>Math.max(m,Number(g.orderNumber||g.startOrder||0)),0)+1;
+  if($('#gOrder')) $('#gOrder').value=String(nextOrder);
+  if($('#gBooking')) $('#gBooking').value=getSelectedBookingId();
+  if($('#gCategory')) $('#gCategory').value=listCategoryValue();
+ }
+}
 async function saveGuest(){
  const name=$('#gName').value.trim();
  if(!name)return showToast('اكتبي اسم الضيف');
  const editId=$('#gEditingId')?.value;
+ const bookingId=$('#gBooking').value;
+ const cards=Number($('#gCards').value||1);
+ const orderNumber=Number($('#gOrder')?.value||0)||null;
+ const meta=packEntryCardMeta(orderNumber,cards,bookingId);
  let guests=db.guests;
  let savedGuest = null;
+
  if(!editId && currentUser?.role==='client'){
-  const bookingId=$('#gBooking').value;
   const st=getBookingSettings(bookingId);
-  const cards=Number($('#gCards').value||1);
   const used=usedClientCards(bookingId);
   if(st.clientCardLimit && used + cards > Number(st.clientCardLimit)){
     return showToast(`تجاوزت الحد المسموح. المتبقي ${Math.max(0,Number(st.clientCardLimit)-used)} بطاقة`);
   }
   if(!st.allowClientAdd) return showToast('يجب طلب إذن من إدارة دعوة للسماح بالإضافة');
-}
-if(editId){
+ }
+
+ if(editId){
   guests=guests.map(g=>{
     if(g.id!==editId) return g;
-    savedGuest={...g,bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),orderNumber:Number($('#gOrder')?.value||0)||null,startOrder:Number($('#gOrder')?.value||0)||null,entryCardUrl:packEntryCardMeta($('#gOrder')?.value,$('#gCards')?.value,$('#gBooking').value).entryCardUrl,entryCardUrls:packEntryCardMeta($('#gOrder')?.value,$('#gCards')?.value,$('#gBooking').value).entryCardUrls,pendingCount:g.rsvpStatus==='pending'?Number($('#gCards').value||1):g.pendingCount,listCategory:$('#gCategory')?.value||g.listCategory||'bride'};
+    savedGuest={
+      ...g,
+      bookingId,
+      guestName:name,
+      phoneNumber:$('#gPhone').value,
+      cardsCount:cards,
+      orderNumber:meta.orderNumber,
+      startOrder:meta.startOrder,
+      entryCardUrl:meta.entryCardUrl,
+      entryCardUrls:meta.entryCardUrls,
+      pendingCount:g.rsvpStatus==='pending'?cards:g.pendingCount,
+      listCategory:$('#gCategory')?.value||g.listCategory||'bride'
+    };
     return savedGuest;
   });
   showToast('تم تعديل الضيف');
  }else{
-  savedGuest={id:uid(),bookingId:$('#gBooking').value,guestName:name,phoneNumber:$('#gPhone').value,cardsCount:Number($('#gCards').value||1),orderNumber:Number($('#gOrder')?.value||0)||null,startOrder:Number($('#gOrder')?.value||0)||null,entryCardUrl:packEntryCardMeta($('#gOrder')?.value,$('#gCards')?.value,$('#gBooking').value).entryCardUrl,entryCardUrls:packEntryCardMeta($('#gOrder')?.value,$('#gCards')?.value,$('#gBooking').value).entryCardUrls,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number($('#gCards').value||1),shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false,listCategory:$('#gCategory')?.value||listCategoryValue(),source:'admin'};
-  guests.unshift(savedGuest);
-  showToast('تم إضافة الضيف');
+  savedGuest={
+    id:uid(),
+    bookingId,
+    guestName:name,
+    phoneNumber:$('#gPhone').value,
+    cardsCount:cards,
+    orderNumber:meta.orderNumber,
+    startOrder:meta.startOrder,
+    entryCardUrl:meta.entryCardUrl,
+    entryCardUrls:meta.entryCardUrls,
+    rsvpStatus:'pending',
+    confirmedCount:0,
+    declinedCount:0,
+    pendingCount:cards,
+    shortCode:'DAWAA'+Math.floor(Math.random()*9999),
+    checkedIn:false,
+    listCategory:$('#gCategory')?.value||listCategoryValue(),
+    source:currentUser?.role==='client'?'client':'admin',
+    forceNew:true,
+    resetStatus:true
+  };
+  guests=[savedGuest,...guests];
+  showToast('تمت إضافة الضيف');
  }
  db.guests=guests;
  closeModal('guestModal');
  render();
- // Sync in background so mobile/other browsers see the same guest.
- saveGuestsToServer(savedGuest, {silent:true}).then(()=>loadGuestsFromServer({silent:true,force:true}));
+ if(savedGuest) await saveGuestsToServer([savedGuest],{silent:true});
 }
 function deleteGuest(id){
  if(!confirm('حذف الضيف؟'))return;
