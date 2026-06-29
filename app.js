@@ -772,7 +772,7 @@ function adminGuests(){
  const selectedBooking=getSelectedBookingId();
  const booking=db.bookings.find(b=>b.id===selectedBooking);
  const guests=filteredGuestsList();
- adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
+ adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير Excel</button></div></div>
  ${bookingSelector()}
  ${metaTemplatePanel(booking||{})}
  ${attachImageGuide()}
@@ -1389,7 +1389,7 @@ function adminReports(){
  const attendanceRate=totalCards?Math.round((confirmedCards/totalCards)*100):0;
  const deliveryRate=s.total?Math.round((deliveredCount/s.total)*100):0;
  const reportRows=guests.map(g=>`<tr><td><b>${escapeHtml(g.guestName)}</b><small>${escapeHtml(g.phoneNumber)}</small></td><td>${g.cardsCount||1}</td><td>${statusBadge(g.rsvpStatus)}</td><td>${g.confirmedCount||0}</td><td>${g.declinedCount||0}</td><td>${g.pendingCount||0}</td></tr>`).join('');
- adminShell(`<div class="section-title-row"><div><span class="eyebrow">التقارير</span><h1>تقرير ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">اختاري المناسبة وشوفي ملخص الحضور، الردود، الإرسال، والبطاقات بشكل واضح وقابل للتصدير.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="print()">طباعة التقرير</button><button class="btn btn-primary" onclick="exportReportCsv()">تصدير CSV</button></div></div>
+ adminShell(`<div class="section-title-row"><div><span class="eyebrow">التقارير</span><h1>تقرير ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">اختاري المناسبة وشوفي ملخص الحضور، الردود، الإرسال، والبطاقات بشكل واضح وقابل للتصدير.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="print()">طباعة التقرير</button><button class="btn btn-primary" onclick="exportReportCsv()">تصدير Excel</button></div></div>
  ${bookingSelector()}
  <div class="report-summary-grid">
    <div class="report-hero-card"><span>نسبة الحضور</span><b>${attendanceRate}%</b><div class="progress"><span style="width:${attendanceRate}%"></span></div><small>${confirmedCards} بطاقة حضور من أصل ${totalCards}</small></div>
@@ -1410,9 +1410,9 @@ function exportReportCsv(){
  const guests=db.guests.filter(g=>g.bookingId===selectedBooking);
  const rows=[
   ['المناسبة','الضيف','رقم الهاتف','البطاقات','الحالة','حاضر','معتذر','لم يؤكد'],
-  ...guests.map(g=>[booking?.eventName||'',g.guestName,g.phoneNumber,g.cardsCount,statusText(g.rsvpStatus),g.confirmedCount||0,g.declinedCount||0,g.pendingCount||0])
+  ...guests.map(g=>[booking?.eventName||'',g.guestName,g.phoneNumber,g.cardsCount,statusArabicText(g.rsvpStatus),g.confirmedCount||0,g.declinedCount||0,g.pendingCount||0])
  ];
- downloadArabicCsv('dawaa-report-arabic.csv', rows);
+ if(typeof downloadArabicCsv==='function') downloadArabicCsv('dawaa-report-arabic.csv', rows);
 }
 function adminStatus(){adminShell(`<h1>حالة النظام</h1><div class="cards status-grid">${['Meta WhatsApp API المباشر','Webhook Meta','Supabase Database','QR Scanner','Client Portal','Visitor Website'].map(x=>`<div class="card"><h3>${x}</h3><span class="badge b-green">Operational</span></div>`).join('')}</div><div class="panel" style="margin-top:22px"><h3>ملاحظة التكامل</h3><p>الإرسال يعمل الآن من Backend داخلي عبر Meta Cloud API مباشرة بدون n8n. تأكدي فقط من متغيرات Vercel وتسجيل Webhook URL في Meta.</p></div>`, 'status')}
 function adminPackages(){const packages=getPackages();adminShell(`<h1>إدارة الباقات</h1><p style="color:#697082;font-weight:700">من هنا تقدري تغيري الباقات بالكامل: الاسم، السعر، الوصف، المميزات، وترتيب ظهورها في صفحة الزوار.</p><div class="panel"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><h3>الباقات الحالية</h3><button class="btn btn-primary" onclick="addPackageRow()">إضافة باقة جديدة</button></div><div id="packagesEditor" class="packages-editor">${packages.map((p,i)=>packageEditorRow(p,i)).join('')}</div><div style="display:flex;gap:12px;margin-top:22px;flex-wrap:wrap"><button class="btn btn-primary" onclick="saveAdminPackages()">حفظ الباقات</button><button class="btn btn-secondary" onclick="resetPackages()">استرجاع الباقات الافتراضية</button></div></div><div class="panel" style="margin-top:22px"><h3>معاينة الباقات كما تظهر للزائر</h3><div class="pricing admin-package-preview">${packages.map((p,i)=>`<div class="price-card ${p.featured?'featured':''}"><h3>${escapeHtml(p.title)}</h3><div class="price">${Number(p.price||0)} ر.ع</div><p>${escapeHtml(p.desc||'')}</p><ul>${(p.features||[]).filter(Boolean).map(f=>`<li>✓ ${escapeHtml(f)}</li>`).join('')}</ul></div>`).join('')}</div></div>`,'packages')}
@@ -1657,21 +1657,132 @@ function adminWorkspace(){
 
 function openGuestDrawer(id){const g=db.guests.find(x=>x.id===id); const b=db.bookings.find(x=>x.id===g.bookingId); const d=$('#drawer'); d.innerHTML=`<div class="drawer-head"><button class="btn btn-ghost" onclick="closeDrawer()">إغلاق</button>${statusBadge(g.rsvpStatus)}</div><div class="guest-profile-head"><div class="guest-avatar big">${escapeHtml((g.guestName||'ض')[0])}</div><div><h2>${g.guestName}</h2><p class="muted">${g.phoneNumber} • ${g.cardsCount} بطاقات • ${b?.eventName||''}</p></div></div><div class="drawer-card-summary">${cardStatusChip(g)}</div><div class="quick-actions" style="margin:18px 0"><button class="btn btn-primary" onclick="sendOne('${g.id}')">إعادة إرسال</button><button class="btn btn-secondary" onclick="showToast('تم نسخ الرقم')">نسخ الرقم</button><button class="btn btn-secondary" onclick="editGuest('${g.id}')">تعديل</button><button class="btn btn-ghost" onclick="deleteGuest('${g.id}')">حذف</button></div><h3>Timeline التفصيلي</h3><div class="timeline proof-timeline"><div class="tl"><span class="dot"></span> تم إنشاء سجل الضيف <small>${timeLabel(g.createdAt||g.updatedAt)}</small></div><div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'لم تُرسل الدعوة بعد'} <small>${timeLabel(g.invitationSentAt)}</small></div><div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'لم يؤكد التسليم'} <small>${timeLabel(g.deliveredAt)}</small></div><div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم تُقرأ بعد'} <small>${timeLabel(g.readAt)}</small></div><div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'لم تؤكد البطاقات'} <small>${timeLabel(g.repliedAt)}</small></div></div><h3>بطاقة الدخول</h3><div style="margin-top:12px">${entryCardPreview({guest:g.guestName,code:g.shortCode})}</div>`; d.classList.add('open'); safeIcons();}
 function closeDrawer(){$('#drawer')?.classList.remove('open')}
-function exportGuests(){
+
+function statusArabicText(status){
+  const s=String(status||'pending');
+  if(['confirmed','checked-in','attended'].includes(s)) return 'حاضر';
+  if(['declined','cancelled'].includes(s)) return 'معتذر';
+  if(['sent'].includes(s)) return 'مرسل';
+  if(['delivered'].includes(s)) return 'تم التسليم';
+  if(['read'].includes(s)) return 'تمت القراءة';
+  if(['failed'].includes(s)) return 'فشل';
+  return 'لم يؤكد';
+}
+function statusExcelColor(status){
+  const s=String(status||'pending');
+  if(['confirmed','checked-in','attended'].includes(s)) return 'C6EFCE';
+  if(['declined','cancelled'].includes(s)) return 'FFC7CE';
+  if(['sent','delivered','read'].includes(s)) return 'DDEBFF';
+  if(['failed'].includes(s)) return 'F4B183';
+  return 'FFF2CC';
+}
+function statusExcelFontColor(status){
+  const s=String(status||'pending');
+  if(['confirmed','checked-in','attended'].includes(s)) return '006100';
+  if(['declined','cancelled'].includes(s)) return '9C0006';
+  if(['sent','delivered','read'].includes(s)) return '1F4E79';
+  if(['failed'].includes(s)) return '7F3300';
+  return '9C6500';
+}
+function ensureSheetJsLoaded(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload=()=>resolve(window.XLSX);
+    s.onerror=()=>reject(new Error('تعذر تحميل مكتبة Excel'));
+    document.head.appendChild(s);
+  });
+}
+async function exportGuestsXlsxArabic(){
+  try{
+    const XLSX=await ensureSheetJsLoaded();
+    const bookingId=getSelectedBookingId();
+    const booking=db.bookings.find(b=>b.id===bookingId);
+    const guests=filteredGuestsList();
+
+    const rows=[
+      ['الاسم','رقم الهاتف','عدد البطاقات','الحالة','حاضر','معتذر','لم يؤكد','تصنيف القائمة','آخر تحديث'],
+      ...guests.map(g=>[
+        g.guestName||'',
+        g.phoneNumber||'',
+        Number(g.cardsCount||1),
+        statusArabicText(g.rsvpStatus),
+        Number(g.confirmedCount||0),
+        Number(g.declinedCount||0),
+        Number(g.pendingCount||0),
+        listCategoryLabel(g.listCategory),
+        timeLabel(g.repliedAt||g.readAt||g.deliveredAt||g.invitationSentAt||g.updatedAt||'')
+      ])
+    ];
+
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=[
+      {wch:28},{wch:18},{wch:12},{wch:16},{wch:10},{wch:10},{wch:12},{wch:18},{wch:24}
+    ];
+
+    // Style cells when using SheetJS community: styling may not be applied in all viewers,
+    // but supported builds/readers will preserve it. Fallback is Arabic text.
+    for(let r=2;r<=rows.length;r++){
+      const g=guests[r-2];
+      const statusCell='D'+r;
+      if(ws[statusCell]){
+        ws[statusCell].s={
+          fill:{fgColor:{rgb:statusExcelColor(g.rsvpStatus)}},
+          font:{bold:true,color:{rgb:statusExcelFontColor(g.rsvpStatus)}},
+          alignment:{horizontal:'center'}
+        };
+      }
+    }
+    // Header styling
+    for(const col of ['A','B','C','D','E','F','G','H','I']){
+      const cell=col+'1';
+      if(ws[cell]){
+        ws[cell].s={
+          font:{bold:true,color:{rgb:'FFFFFF'}},
+          fill:{fgColor:{rgb:'6B2BC8'}},
+          alignment:{horizontal:'center'}
+        };
+      }
+    }
+
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'قائمة الضيوف');
+    const fileName=`ضيوف-${(booking?.eventName||'دعوة').replace(/[\\/:*?"<>|]/g,'-')}.xlsx`;
+    XLSX.writeFile(wb,fileName,{bookType:'xlsx',cellStyles:true});
+    showToast('تم تصدير ملف Excel بالعربي');
+  }catch(e){
+    console.error('[exportGuestsXlsxArabic]',e);
+    showToast('تعذر تصدير Excel، سيتم تنزيل CSV عربي');
+    exportGuestsCsvArabicFallback();
+  }
+}
+function exportGuestsCsvArabicFallback(){
  const rows=[
   ['الاسم','رقم الهاتف','عدد البطاقات','الحالة','حاضر','معتذر','لم يؤكد','تصنيف القائمة'],
   ...filteredGuestsList().map(g=>[
     g.guestName,
     g.phoneNumber,
     g.cardsCount,
-    statusText(g.rsvpStatus),
+    statusArabicText(g.rsvpStatus),
     g.confirmedCount||0,
     g.declinedCount||0,
     g.pendingCount||0,
     listCategoryLabel(g.listCategory)
   ])
  ];
- downloadArabicCsv('dawaa-guests-arabic.csv', rows);
+ if(typeof downloadArabicCsv==='function') downloadArabicCsv('dawaa-guests-arabic.csv', rows);
+ else{
+  const csv='\ufeff'+rows.map(r=>r.map(x=>`"${String(x??'').replaceAll('"','""')}"`).join(',')).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='dawaa-guests-arabic.csv';
+  a.click();
+ }
+}
+
+function exportGuests(){
+ exportGuestsXlsxArabic();
 }
 
 function clientGuestDetails(id){
