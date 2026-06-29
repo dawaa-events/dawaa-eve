@@ -1,5 +1,5 @@
 const { sendTemplateBySelection } = require('./_lib/meta');
-const { ensureGuestExists, updateGuest, insertMessage, logTimeline } = require('./_lib/supabase');
+const { ensureGuestExists, updateGuest, updateGuestByPhone, insertMessage, logTimeline } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -81,13 +81,15 @@ module.exports = async function handler(req, res) {
 
       if (result.status === 'sent') {
         const now = new Date().toISOString();
-        await updateGuest(guestId, {
+        const sentUpdate = {
           rsvpStatus: 'sent',
           invitationSentAt: now,
           metaMessageId: result.messageId,
           cardsCount,
           pendingCount: cardsCount
-        }).catch(() => null);
+        };
+        const updatedById = await updateGuest(guestId, sentUpdate).catch(() => null);
+        if (!updatedById) await updateGuestByPhone(phoneNumber, sentUpdate).catch(() => null);
 
         await insertMessage({
           bookingId: booking.id || originalGuest.bookingId,

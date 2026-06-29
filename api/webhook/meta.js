@@ -1,7 +1,7 @@
 const { metaWebhookVerifyToken } = require('../_lib/config');
 const { normalizePhone } = require('../_lib/phone');
 const { sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection } = require('../_lib/meta');
-const { getGuestByPhone, getGuestByMetaMessageId, updateGuest, insertMessage, logTimeline, logWebhookEvent } = require('../_lib/supabase');
+const { getGuestByPhone, getGuestByMetaMessageId, updateGuest, updateGuestByPhone, insertMessage, logTimeline, logWebhookEvent } = require('../_lib/supabase');
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -47,7 +47,18 @@ async function findGuestForMessage(phoneNumber, contextMessageId) {
   let guest = null;
   if (contextMessageId) guest = await getGuestByMetaMessageId(contextMessageId);
   if (!guest) guest = await getGuestByPhone(phoneNumber);
+  if (!guest && phoneNumber?.startsWith('968')) guest = await getGuestByPhone(phoneNumber.slice(3));
+  if (!guest && phoneNumber && phoneNumber.length === 8) guest = await getGuestByPhone('968'+phoneNumber);
   return guest;
+}
+
+
+async function safeUpdateGuest(guest, phoneNumber, updates) {
+  if (!guest) return null;
+  let updated = null;
+  if (guest.id) updated = await updateGuest(guest.id, updates).catch(() => null);
+  if (!updated && phoneNumber) updated = await updateGuestByPhone(phoneNumber, updates).catch(() => null);
+  return updated;
 }
 
 async function processButton(message) {
@@ -63,7 +74,7 @@ async function processButton(message) {
 
   const cardsCount = Math.max(1, Number(guest.cardsCount || guest.pendingCount || 1));
   if (buttonId === 'btn_decline') {
-    await updateGuest(guest.id, {
+    await safeUpdateGuest(guest, phoneNumber, {
       rsvpStatus: 'declined', confirmedCount: 0, declinedCount: cardsCount, pendingCount: 0, repliedAt: new Date().toISOString()
     });
     await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أعتذر عن الحضور', status: 'received' });
@@ -74,7 +85,7 @@ async function processButton(message) {
   }
 
   if (buttonId === 'btn_confirm' && cardsCount > 1) {
-    await updateGuest(guest.id, { rsvpStatus: 'pending', pendingCount: cardsCount, repliedAt: new Date().toISOString() });
+    await safeUpdateGuest(guest, phoneNumber, { rsvpStatus: 'pending', pendingCount: cardsCount, repliedAt: new Date().toISOString() });
     await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أرغب في الحضور - بانتظار عدد البطاقات', status: 'received' });
     await logTimeline(guest, 'rsvp_confirm_requested_count', { cardsCount }, 'meta');
     const listSend = await sendCardCountSelection(phoneNumber, guest.guestName, cardsCount);
@@ -82,7 +93,7 @@ async function processButton(message) {
     return;
   }
 
-  await updateGuest(guest.id, {
+  await safeUpdateGuest(guest, phoneNumber, {
     rsvpStatus: 'confirmed', confirmedCount: 1, declinedCount: 0, pendingCount: 0, repliedAt: new Date().toISOString()
   });
   await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'button', messageBody: 'أرغب في الحضور', status: 'received' });
@@ -105,7 +116,7 @@ async function processListReply(message) {
   const cardsCount = Math.max(1, Number(guest.cardsCount || guest.pendingCount || 1));
   const confirmedCount = Math.max(0, Math.min(selectedCount, cardsCount));
   const declinedCount = Math.max(0, cardsCount - confirmedCount);
-  await updateGuest(guest.id, {
+  await safeUpdateGuest(guest, phoneNumber, {
     rsvpStatus: 'confirmed', confirmedCount, declinedCount, pendingCount: 0, repliedAt: new Date().toISOString()
   });
   await insertMessage({ bookingId: guest.bookingId, guestId: guest.id, phoneNumber, direction: 'inbound', messageType: 'list_reply', messageBody: `تأكيد ${confirmedCount} من ${cardsCount}`, status: 'received' });
@@ -133,7 +144,7 @@ async function processStatus(status) {
     if (canMarkMessageState) updates.rsvpStatus = 'read';
   }
   if (status.status === 'failed') updates.rsvpStatus = 'failed';
-  if (Object.keys(updates).length) await updateGuest(guest.id, updates);
+  if (Object.keys(updates).length) await safeUpdateGuest(guest, phoneNumber, updates);
   await logTimeline(guest, `message_${status.status}`, { messageId, status }, 'meta');
 }
 
