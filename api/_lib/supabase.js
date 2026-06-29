@@ -187,12 +187,48 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
   if (!phoneNumber) return null;
 
-  // Important:
+  const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
+  const forceNew = Boolean(guest.forceNew || guest.force_new || guest.resetStatus || guest.reset_status);
+
+  // If this is a newly re-added/imported guest, never reuse previous RSVP state.
+  // Create a fresh row with pending status.
+  if (forceNew) {
+    const payload = toDbGuestInsert({
+      ...guest,
+      id: null,
+      dbGuestId: null,
+      phoneNumber,
+      rsvpStatus: 'pending',
+      confirmedCount: 0,
+      declinedCount: 0,
+      pendingCount: cardsCount,
+      metaMessageId: null,
+      invitationSentAt: null,
+      deliveredAt: null,
+      readAt: null,
+      repliedAt: null
+    }, booking);
+    payload.rsvp_status = 'pending';
+    payload.status = 'pending';
+    payload.confirmed_count = 0;
+    payload.declined_count = 0;
+    payload.pending_count = cardsCount;
+    payload.meta_message_id = null;
+    payload.invitation_sent_at = null;
+    payload.delivered_at = null;
+    payload.read_at = null;
+    payload.replied_at = null;
+    const data = await request('/guests?select=*', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(payload)
+    });
+    return fromDbGuest(Array.isArray(data) ? data[0] : data);
+  }
+
   // Do NOT merge guests by phone number.
-  // In real events, multiple different guest names may share the same phone number.
-  // We only update an existing row when the frontend supplies a real Supabase UUID.
+  // Only update existing row when frontend supplied a real UUID.
   if (isUuid(guest.id)) {
-    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
     const updated = await updateGuest(guest.id, {
       cardsCount,
       pendingCount: cardsCount,
@@ -204,9 +240,7 @@ async function ensureGuestExists(guest = {}, booking = {}) {
     if (updated) return updated;
   }
 
-  // If this guest was already synced before, update that row.
   if (isUuid(guest.dbGuestId || guest.db_guest_id)) {
-    const cardsCount = Number(guest.cardsCount || guest.cards_count || guest.cards || 1);
     const updated = await updateGuest(guest.dbGuestId || guest.db_guest_id, {
       cardsCount,
       pendingCount: cardsCount,
@@ -218,8 +252,7 @@ async function ensureGuestExists(guest = {}, booking = {}) {
     if (updated) return updated;
   }
 
-  // Otherwise always insert a new row, even if phone number already exists.
-  const payload = toDbGuestInsert({ ...guest, phoneNumber }, booking);
+  const payload = toDbGuestInsert({ ...guest, phoneNumber, rsvpStatus: guest.rsvpStatus || 'pending' }, booking);
   const data = await request('/guests?select=*', {
     method: 'POST',
     headers: { Prefer: 'return=representation' },

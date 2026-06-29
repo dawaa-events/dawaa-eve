@@ -83,7 +83,7 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
 }
 async function saveGuestsToServer(guests=[], {silent=true}={}){
  try{
-  const list=Array.isArray(guests)?guests:[guests]; if(!list.filter(Boolean).length) return false;
+  const list=(Array.isArray(guests)?guests:[guests]).map(g=>g?.forceNew?{...g,dbGuestId:null,db_guest_id:null}:g); if(!list.filter(Boolean).length) return false;
   const booking=db.bookings.find(b=>b.id===(list[0]?.bookingId||getSelectedBookingId()))||db.bookings[0]||{};
   const res=await fetch('/api/guests-sync',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({booking,guests:list})});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
@@ -1056,7 +1056,9 @@ async function importGuestsFile(e){
         shortCode:'DAWAA'+Math.floor(Math.random()*9999),
         checkedIn:false,
         listCategory:category,
-        source:currentUser?.role==='client'?'client':'admin'
+        source:currentUser?.role==='client'?'client':'admin',
+        forceNew:true,
+        resetStatus:true
       };
 
       const key=importGuestUniqueKey(g);
