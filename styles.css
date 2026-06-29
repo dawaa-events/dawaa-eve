@@ -2413,3 +2413,9 @@ button[onclick="logout()"]:before{
 @media(max-width:850px){
   .template-card-grid{grid-template-columns:1fr}
 }
+
+.danger-soft{
+  color:#dc2626!important;
+  background:#fff5f5!important;
+  border-color:#fecaca!important;
+}

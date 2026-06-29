@@ -60,7 +60,7 @@ function mergeGuestsFromServer(remoteGuests=[]){
  const map=new Map(local.map(g=>[keyOf(g),g]));
  let changed=false;
  (remoteGuests||[]).forEach(raw=>{
-  const r=normalizeRemoteGuest(raw,selected); if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const old=map.get(k);
+  const r=normalizeRemoteGuest(raw,selected); if(isBadGuestRecord(r)) return; if(isDeletedGuestId(r.dbGuestId)||isDeletedGuestId(String(r.id||'').replace('remote_',''))) return; const k=keyOf(r); const identityKey=guestExactImportKey(r); const duplicateByIdentity=[...map.values()].find(x=>guestExactImportKey(x)===identityKey); const old=map.get(k)||duplicateByIdentity;
   if(!old){map.set(k,r); changed=true}
   else{const merged={...old,...r,id:old.id||r.id,bookingId:r.bookingId||old.bookingId||selected}; if(JSON.stringify(merged)!==JSON.stringify(old)){map.set(k,merged); changed=true}}
  });
@@ -772,14 +772,11 @@ function adminGuests(){
  const selectedBooking=getSelectedBookingId();
  const booking=db.bookings.find(b=>b.id===selectedBooking);
  const guests=filteredGuestsList();
- adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
+ adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-secondary danger-soft" onclick="cleanupBadGuests()">تنظيف التالف/المكرر</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير CSV</button></div></div>
  ${bookingSelector()}
  ${metaTemplatePanel(booking||{})}
  ${attachImageGuide()}
  <input id="guestImportFile" type="file" accept=".csv,.txt,.xlsx,.xls" style="display:none" onchange="importGuestsFile(event)">
- ${listCategoryBar()}
- ${listCategoryBar()}
- ${listCategoryBar()}
  ${listCategoryBar()}
  <div class="filter-bar compact-filter"><input class="search" id="guestSearch" oninput="renderGuestListOnly()" placeholder="ابحثي بالاسم أو الرقم"><div class="filter-chips"><button onclick="filterGuestsByStatus('')">الكل</button><button onclick="filterGuestsByStatus('confirmed')">حاضر</button><button onclick="filterGuestsByStatus('pending')">لم يؤكد</button><button onclick="filterGuestsByStatus('declined')">معتذر</button><button onclick="filterGuestsByStatus('sent')">مرسل</button></div></div>
  <div class="guest-view-toolbar"><span>طريقة العرض</span>${guestViewToggle()}</div>
@@ -787,7 +784,16 @@ function adminGuests(){
  <div id="guestTable">${guestTable(guests, true)}</div>`, 'guests');
  setTimeout(()=>loadGuestsFromServer({silent:true,force:true}), 80);
 }
-function filteredGuestsList(){const q=$('#guestSearch')?.value||''; const bookingId=getSelectedBookingId(); return db.guests.filter(g=>(!bookingId||g.bookingId===bookingId)&&(!guestStatusFilter||g.rsvpStatus===guestStatusFilter)&&(g.guestName.includes(q)||g.phoneNumber.includes(q)))}
+function filteredGuestsList(){
+ const q=$('#guestSearch')?.value||'';
+ const bookingId=getSelectedBookingId();
+ const base=(db.guests||[]).filter(g=>
+   (!bookingId||g.bookingId===bookingId) &&
+   (!guestStatusFilter||g.rsvpStatus===guestStatusFilter) &&
+   ((g.guestName||'').includes(q)||(g.phoneNumber||'').includes(q))
+ );
+ return safeVisibleGuests(base);
+}
 function guestTable(guests, selectable=false){
  if(guestViewMode === 'table') return guestTableRows(guests, selectable);
  return `<div class="guest-card-grid compact-guests">${guests.length?guests.map(g=>{const b=db.bookings.find(x=>x.id===g.bookingId);return `<article class="guest-mini-card ${selectedGuestIds.has(g.id)?'selected':''}" onclick="event.stopPropagation()">${selectable?`<label class="select-dot" onclick="event.stopPropagation()"><input type="checkbox" ${selectedGuestIds.has(g.id)?'checked':''} onchange="toggleGuestSelection('${g.id}')"></label>`:''}<div class="guest-avatar">${escapeHtml((g.guestName||'ض')[0])}</div><div class="guest-info"><h3>${escapeHtml(g.guestName)}</h3><p>${g.phoneNumber} • ${g.cardsCount} ${Number(g.cardsCount||1)===1?'بطاقة':'بطاقات'}</p><small>${b?.eventName||''}</small>${cardStatusChip(g)}</div><div class="guest-actions">${statusBadge(g.rsvpStatus)}<button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();editGuest('${g.id}')">تعديل</button><button class="btn btn-secondary btn-mini" onclick="event.stopPropagation();sendOne('${g.id}')">إرسال</button><button class="btn btn-ghost btn-mini" onclick="event.stopPropagation();deleteGuest('${g.id}')">حذف</button></div></article>`}).join(''):`<div class="empty-state"><b>لا يوجد ضيوف لهذه المناسبة</b><span>ارفعي ملف Excel/CSV أو أضيفي ضيفاً جديداً.</span></div>`}</div>`
@@ -916,39 +922,234 @@ function downloadArabicCsv(filename, rows){
   a.remove();
 }
 
-function importGuestsFile(e){
+
+function ensureSheetJsLoaded(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload=()=>resolve(window.XLSX);
+    s.onerror=()=>reject(new Error('تعذر تحميل مكتبة قراءة Excel'));
+    document.head.appendChild(s);
+  });
+}
+function normalizeImportCell(v){
+  if(v === null || v === undefined) return '';
+  return String(v).replace(/^\ufeff/,'').trim();
+}
+function detectGuestColumns(header=[]){
+  const clean=header.map(h=>normalizeImportCell(h).toLowerCase());
+  const find=(patterns, fallback)=> {
+    const idx=clean.findIndex(h=>patterns.some(p=>h.includes(p)));
+    return idx >= 0 ? idx : fallback;
+  };
+  return {
+    name: find(['الاسم','اسم','name','guest'], 0),
+    phone: find(['الهاتف','هاتف','رقم','phone','mobile','whatsapp'], 1),
+    cards: find(['البطاقات','بطاقات','عدد','cards','card'], 2)
+  };
+}
+function rowsFromCsvText(text){
+  return text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(parseCsvLineArabic);
+}
+async function rowsFromImportedFile(file, buffer){
+  const name=String(file.name||'').toLowerCase();
+
+  // XLSX/XLS: read real spreadsheet cells. This is the important part.
+  if(name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.xlsm')){
+    const XLSX=await ensureSheetJsLoaded();
+    const wb=XLSX.read(buffer,{type:'array'});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+    return rows.map(r=>r.map(normalizeImportCell)).filter(r=>r.some(Boolean));
+  }
+
+  // CSV/TXT: decode Arabic encodings.
+  const text=decodeArabicFileBuffer(buffer);
+  return rowsFromCsvText(text);
+}
+function cleanImportedPhone(v=''){
+  let d=String(v||'').replace(/\D/g,'');
+  if(d.startsWith('00')) d=d.slice(2);
+  if(d.length===8) d='968'+d;
+  return d;
+}
+function isLikelyHeaderRow(row=[]){
+  const joined=row.map(normalizeImportCell).join(' ').toLowerCase();
+  return /name|guest|اسم|الاسم|phone|هاتف|رقم|بطاقات|cards|card/.test(joined);
+}
+
+
+
+
+
+
+async 
+
+
+function normalizeGuestIdentity(v=''){
+  return String(v||'')
+    .trim()
+    .toLowerCase()
+    .replace(/[ً-ٰٟ]/g,'')
+    .replace(/[أإآ]/g,'ا')
+    .replace(/ى/g,'ي')
+    .replace(/ة/g,'ه')
+    .replace(/\s+/g,' ');
+}
+function guestExactImportKey(g){
+  return [
+    String(g.bookingId||getSelectedBookingId()||''),
+    normalizeGuestIdentity(g.guestName||g.guest_name||g.name||''),
+    cleanImportedPhone(g.phoneNumber||g.phone_number||g.phone||'')
+  ].join('|');
+}
+function isCorruptedGuestName(name=''){
+  const s=String(name||'').trim();
+  if(!s || s==='-' || s.length<2) return true;
+
+  // Literal question marks / mojibake / unknown replacement chars
+  if(/[؟?]{2,}/.test(s)) return true;
+  if(/[�□■]/.test(s)) return true;
+
+  const arabic=(s.match(/[\u0600-\u06FF]/g)||[]).length;
+  const latin=(s.match(/[a-zA-Z]/g)||[]).length;
+  const digits=(s.match(/\d/g)||[]).length;
+  const spaces=(s.match(/\s/g)||[]).length;
+  const useful=arabic+latin+digits+spaces;
+  const symbols=(s.match(/[^\u0600-\u06FFa-zA-Z0-9\s]/g)||[]).length;
+
+  // Names imported from broken XLSX usually become symbol-heavy strings like ÐPK□□ or @Q=...
+  if(arabic===0 && symbols>=2) return true;
+  if(symbols > useful) return true;
+  if(arabic===0 && latin===0 && symbols>0) return true;
+
+  return false;
+}
+function isBadGuestRecord(g){
+  const phone=cleanImportedPhone(g.phoneNumber||g.phone_number||g.phone||'');
+  if(isCorruptedGuestName(g.guestName||g.guest_name||g.name)) return true;
+  if(!phone) return true;
+  // Oman numbers should be 968 + 8 digits. If it starts with 968 but is shorter, it is corrupt.
+  if(phone.startsWith('968') && phone.length < 11) return true;
+  // Very short phones are invalid.
+  if(phone.length < 8) return true;
+  return false;
+}
+function safeVisibleGuests(list){
+  const seen=new Set();
+  const out=[];
+  for(const g of (list||[])){
+    if(isBadGuestRecord(g)) continue;
+    const key=guestExactImportKey(g);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    out.push(g);
+  }
+  return out;
+}
+async function cleanupBadGuests(){
+  const bookingId=getSelectedBookingId();
+  if(!bookingId) return showToast('اختاري مناسبة أولاً');
+
+  const guests=(db.guests||[]).filter(g=>g.bookingId===bookingId);
+  const seen=new Set();
+  const bad=[];
+  const good=[];
+
+  for(const g of guests){
+    const key=guestExactImportKey(g);
+    if(isBadGuestRecord(g) || seen.has(key)){
+      bad.push(g);
+    }else{
+      seen.add(key);
+      good.push(g);
+    }
+  }
+
+  if(!bad.length) return showToast('مافي ضيوف تالفين أو مكررين للتنظيف');
+  if(!confirm(`سيتم حذف ${bad.length} ضيف تالف/مكرر نهائياً من Supabase. متأكدة؟`)) return;
+
+  const badLocalIds=new Set(bad.map(g=>g.id));
+  const badDbIds=new Set(bad.map(g=>g.dbGuestId || String(g.id||'').replace('remote_','')).filter(Boolean));
+  db.guests=(db.guests||[]).filter(g=>!badLocalIds.has(g.id) && !badDbIds.has(g.dbGuestId));
+  render();
+
+  showToast(`جاري حذف ${bad.length} ضيف تالف/مكرر من Supabase`);
+  for(const g of bad){
+    if(window.deleteGuestFromServer) await deleteGuestFromServer(g);
+  }
+
+  await loadGuestsFromServer({silent:true,force:true});
+  // Apply local hard filter again after sync
+  db.guests = (db.guests||[]).filter(g=>!(g.bookingId===bookingId && isBadGuestRecord(g)));
+  render();
+  showToast('تم تنظيف القائمة');
+}
+
+async function importGuestsFile(e){
  const file=e.target.files?.[0];
  if(!file)return;
- const reader=new FileReader();
- reader.onload=()=>{
-  const text=decodeArabicFileBuffer(reader.result);
-  const lines=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+ try{
+  const buffer=await file.arrayBuffer();
+  const rows=await rowsFromImportedFile(file, buffer);
   const bookingId=getSelectedBookingId() || db.bookings[0]?.id;
   const category=listCategoryValue();
   let added=0;
+  let skipped=0;
   const current=db.guests;
+  const existingKeys=new Set(safeVisibleGuests(current).map(guestExactImportKey));
   const newGuests=[];
-  lines.forEach((line,i)=>{
-    const parts=parseCsvLineArabic(line).map(x=>x.trim());
-    const joined=parts.join(' ');
-    if(i===0 && /name|guest|اسم|الاسم|phone|هاتف|رقم|بطاقات|cards/i.test(joined))return;
-    const guestName=parts[0]||'';
-    const phoneNumber=(parts[1]||'').replace(/\D/g,'');
-    const cardsCount=Number(parts[2]||1) || 1;
+
+  let startIndex=0;
+  let columns={name:0, phone:1, cards:2};
+  if(rows.length && isLikelyHeaderRow(rows[0])){
+    columns=detectGuestColumns(rows[0]);
+    startIndex=1;
+  }
+
+  for(let i=startIndex;i<rows.length;i++){
+    const row=rows[i]||[];
+    const guestName=normalizeImportCell(row[columns.name]);
+    const phoneNumber=cleanImportedPhone(row[columns.phone]);
+    const cardsCount=Number(normalizeImportCell(row[columns.cards])||1) || 1;
+
     if(guestName && phoneNumber){
-      const normalizedPhone=phoneNumber.startsWith('968')?phoneNumber:'968'+phoneNumber;
-      const g={id:uid(),bookingId,guestName,phoneNumber:normalizedPhone,cardsCount,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:cardsCount,shortCode:'DAWAA'+Math.floor(Math.random()*9999),checkedIn:false,listCategory:category,source:currentUser?.role==='client'?'client':'admin'};
+      const g={
+        id:uid(),
+        bookingId,
+        guestName,
+        phoneNumber,
+        cardsCount,
+        rsvpStatus:'pending',
+        confirmedCount:0,
+        declinedCount:0,
+        pendingCount:cardsCount,
+        shortCode:'DAWAA'+Math.floor(Math.random()*9999),
+        checkedIn:false,
+        listCategory:category,
+        source:currentUser?.role==='client'?'client':'admin'
+      };
+      if(isBadGuestRecord(g)){ skipped++; continue; }
+      const key=guestExactImportKey(g);
+      if(existingKeys.has(key)){ skipped++; continue; }
+      existingKeys.add(key);
       current.push(g);
       newGuests.push(g);
       added++;
     }
-  });
+  }
+
   db.guests=current;
-  showToast(`تم استيراد ${added} ضيف ضمن ${listCategoryLabel(category)}`);
+  showToast(`تم استيراد ${added} ضيف ضمن ${listCategoryLabel(category)}${skipped?`، وتم تجاهل ${skipped} مكرر`:''}`);
   render();
   if(newGuests.length) saveGuestsToServer(newGuests,{silent:true}).then(()=>loadGuestsFromServer({silent:true,force:true}));
- };
- reader.readAsArrayBuffer(file);
+ }catch(err){
+  console.error('[importGuestsFile]',err);
+  showToast(err.message || 'تعذر قراءة الملف. استخدمي XLSX أو CSV UTF-8');
+ }finally{
+  e.target.value='';
+ }
 }
 
 function normalizeMatchText(v=''){
