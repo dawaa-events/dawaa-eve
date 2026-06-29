@@ -1,4 +1,4 @@
-const { listGuests, ensureGuestExists, deleteGuest } = require('./_lib/supabase');
+const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -28,6 +28,13 @@ module.exports = async function handler(req, res) {
 
 
     if (req.method === 'DELETE') {
+      let body = {};
+      try { body = await readBody(req); } catch (_) {}
+      if (body?.guest) {
+        const result = await deleteGuestsByIdentity(body.guest, body.booking || {});
+        return json(res, 200, { success: true, ...result });
+      }
+
       const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
       const id = url.searchParams.get('id');
       if (!id) return json(res, 400, { success: false, message: 'Missing guest id' });

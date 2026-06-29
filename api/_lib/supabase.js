@@ -191,6 +191,50 @@ async function updateGuestByPhone(phoneNumber, update) {
 }
 
 
+
+function normalizeIdentityName(value='') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[ً-ٰٟ]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ');
+}
+
+async function deleteGuestsByIdentity(guest = {}, booking = {}) {
+  if (!isConfigured()) return { deleted: false, reason: 'not_configured' };
+  const bookingId = guest.bookingId || guest.booking_id || booking.id || booking.bookingId;
+  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
+  const guestName = guest.guestName || guest.guest_name || guest.name || '';
+  if (!isUuid(bookingId) || !phoneNumber || !guestName) return { deleted: false, reason: 'missing_identity' };
+
+  try {
+    // Delete exact phone + name first.
+    await request(`/guests?booking_id=eq.${eq(bookingId)}&phone_number=eq.${eq(phoneNumber)}&guest_name=eq.${eq(guestName)}`, {
+      method: 'DELETE',
+      headers: { Prefer: 'return=minimal' }
+    });
+
+    // Also delete same phone where old data may use a slightly different Arabic normalization.
+    const rows = await request(`/guests?booking_id=eq.${eq(bookingId)}&phone_number=eq.${eq(phoneNumber)}&select=id,guest_name`);
+    const normalizedTarget = normalizeIdentityName(guestName);
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+      if (normalizeIdentityName(row.guest_name) === normalizedTarget && isUuid(row.id)) {
+        await request(`/guests?id=eq.${eq(row.id)}`, {
+          method: 'DELETE',
+          headers: { Prefer: 'return=minimal' }
+        });
+      }
+    }
+    return { deleted: true };
+  } catch (error) {
+    console.error('[Supabase] deleteGuestsByIdentity failed', error.message || error);
+    return { deleted: false, error: error.message || String(error) };
+  }
+}
+
 async function deleteGuest(id) {
   if (!isConfigured() || !id) return null;
   if (!isUuid(id)) {
@@ -218,12 +262,15 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   const forceNew = Boolean(guest.forceNew || guest.force_new || guest.resetStatus || guest.reset_status);
 
   // If this is a newly re-added/imported guest, never reuse previous RSVP state.
-  // Create a fresh row with pending status.
+  // Hard-delete the old same booking+name+phone row first, then insert a clean pending row.
   if (forceNew) {
+    await deleteGuestsByIdentity({ ...guest, phoneNumber }, booking);
+
     const payload = toDbGuestInsert({
       ...guest,
       id: null,
       dbGuestId: null,
+      db_guest_id: null,
       phoneNumber,
       rsvpStatus: 'pending',
       confirmedCount: 0,
@@ -235,6 +282,7 @@ async function ensureGuestExists(guest = {}, booking = {}) {
       readAt: null,
       repliedAt: null
     }, booking);
+
     payload.rsvp_status = 'pending';
     payload.status = 'pending';
     payload.confirmed_count = 0;
@@ -245,6 +293,8 @@ async function ensureGuestExists(guest = {}, booking = {}) {
     payload.delivered_at = null;
     payload.read_at = null;
     payload.replied_at = null;
+    payload.updated_at = new Date().toISOString();
+
     const data = await request('/guests?select=*', {
       method: 'POST',
       headers: { Prefer: 'return=representation' },
@@ -359,6 +409,7 @@ module.exports = {
   updateGuest,
   updateGuestByPhone,
   deleteGuest,
+  deleteGuestsByIdentity,
   ensureGuestExists,
   listGuests,
   getGuestByPhone,

@@ -45,16 +45,26 @@ function isDeletedGuestId(id){
 }
 async function deleteGuestFromServer(guest){
   const dbId = guest?.dbGuestId || (String(guest?.id||'').startsWith('remote_') ? String(guest.id).replace('remote_','') : guest?.id);
-  if(!dbId) return false;
-  rememberDeletedGuestId(dbId);
+  if(dbId) rememberDeletedGuestId(dbId);
+  let ok=false;
   try{
-    const res=await fetch('/api/guests-sync?id='+encodeURIComponent(dbId),{method:'DELETE',cache:'no-store'});
-    if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
-    return true;
-  }catch(e){
-    console.warn('[deleteGuestFromServer]',e);
-    return false;
-  }
+    if(dbId){
+      const res=await fetch('/api/guests-sync?id='+encodeURIComponent(dbId),{method:'DELETE',cache:'no-store'});
+      ok=res.ok;
+    }
+  }catch(e){console.warn('[deleteGuestFromServer:id]',e);}
+  // Always also delete by identity to remove old duplicated rows that may have old RSVP state.
+  try{
+    const booking=db.bookings.find(b=>b.id===(guest?.bookingId||getSelectedBookingId()))||{};
+    const res=await fetch('/api/guests-sync',{
+      method:'DELETE',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({booking,guest})
+    });
+    ok = ok || res.ok;
+  }catch(e){console.warn('[deleteGuestFromServer:identity]',e);}
+  return ok;
 }
 
 function mergeGuestsFromServer(remoteGuests=[]){
@@ -87,7 +97,7 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
 }
 async function saveGuestsToServer(guests=[], {silent=true}={}){
  try{
-  const list=(Array.isArray(guests)?guests:[guests]).map(g=>g?.forceNew?{...g,dbGuestId:null,db_guest_id:null}:g); if(!list.filter(Boolean).length) return false;
+  const list=(Array.isArray(guests)?guests:[guests]).map(g=>g?.forceNew||g?.resetStatus?{...g,dbGuestId:null,db_guest_id:null,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number(g.cardsCount||1),metaMessageId:null,invitationSentAt:null,deliveredAt:null,readAt:null,repliedAt:null}:g); if(!list.filter(Boolean).length) return false;
   const booking=db.bookings.find(b=>b.id===(list[0]?.bookingId||getSelectedBookingId()))||db.bookings[0]||{};
   const res=await fetch('/api/guests-sync',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({booking,guests:list})});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
@@ -1820,7 +1830,12 @@ function deleteGuest(id){
  if(guest){
    rememberDeletedGuestId(guest.dbGuestId || String(guest.id||'').replace('remote_',''));
  }
- db.guests=db.guests.filter(g=>g.id!==id && g.dbGuestId!==id);
+ const identityKey = guest ? `${guest.bookingId}|${String(guest.guestName||'').trim()}|${String(guest.phoneNumber||'').replace(/\D/g,'')}` : '';
+ db.guests=db.guests.filter(g=>{
+   if(g.id===id || g.dbGuestId===id) return false;
+   if(guest && `${g.bookingId}|${String(g.guestName||'').trim()}|${String(g.phoneNumber||'').replace(/\D/g,'')}`===identityKey) return false;
+   return true;
+ });
  showToast('تم الحذف');
  render();
  if(guest){
