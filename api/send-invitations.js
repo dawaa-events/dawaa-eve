@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
         cardsCount,
         receptionTime: booking.receptionTime || booking.reception_time || '-',
         locationLink: booking.locationLink || booking.location_link || '-',
-        parameterMode: 'router'
+        parameterMode: 'named'
       });
 
       if (result.status === 'sent') {
