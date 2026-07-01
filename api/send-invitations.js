@@ -59,7 +59,7 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
-      const guest = await ensureGuestExists({ ...originalGuest, forceNew:false, resetStatus:false }, booking).catch(() => null);
+      const guest = await ensureGuestExists(originalGuest, booking).catch(() => null);
       const guestId = guest?.id || originalGuest.id;
 
       const result = await sendTemplateBySelection({
@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
         cardsCount,
         receptionTime: booking.receptionTime || booking.reception_time || '-',
         locationLink: booking.locationLink || booking.location_link || '-',
-        parameterMode: templateName === 'dawaa_wedding_invitation_image' ? 'named' : 'numbered'
+        parameterMode: 'named'
       });
 
       if (result.status === 'sent') {
@@ -117,7 +117,7 @@ module.exports = async function handler(req, res) {
     const sent = results.filter(r => r.status === 'sent').length;
     const failed = results.length - sent;
 
-    return json(res, 200, { success:true, sent, failed, template:templateName, results });
+    return json(res, sent > 0 ? 200 : 400, { success: sent > 0, sent, failed, template:templateName, results, firstError: results.find(r=>r.status==='failed')?.error || '' });
   } catch (error) {
     console.error('[send-invitations]', error);
     return json(res, 500, { success:false, message:String(error.message || error) });

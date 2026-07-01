@@ -1,5 +1,4 @@
-const { metaApiVersion, metaAccessToken, metaPhoneNumberId, defaultLanguage, templateParameterMode, rsvpConfirmedTemplate, rsvpDeclinedTemplate } = require('./config');
-
+const { metaApiVersion, metaAccessToken, metaPhoneNumberId, defaultLanguage, templateParameterMode, weddingInvitationTemplate, weddingInvitationImageTemplate, rsvpConfirmedTemplate, rsvpDeclinedTemplate, rsvpReminderTemplate, entryCardTemplate } = require('./config');
 async function postMetaMessage(body) {
   if (!metaAccessToken || !metaPhoneNumberId) {
     return { status: 'failed', messageId: '', error: 'Meta API credentials are not configured', requestBody: body };
@@ -130,35 +129,71 @@ function imageHeaderComponent(imageUrl) {
 }
 
 async function sendTemplateBySelection(params = {}) {
-  const templateName = params.templateName || params.template || 'dawaa_wedding_invitation';
+  const requested = params.templateName || params.template || weddingInvitationTemplate;
   const languageCode = params.languageCode || defaultLanguage;
   const imageUrl = params.imageUrl || params.invitationImageUrl || params.cardUrl || '';
 
-  // Invitation templates with variables
-  if (templateName === 'dawaa_wedding_invitation' || templateName === 'dawaa_wedding_invitation_image') {
-    const components = invitationComponents(params, templateName.includes('_image') ? 'named' : (params.parameterMode || templateParameterMode || 'numbered'));
-    const header = templateName.includes('_image') ? imageHeaderComponent(imageUrl) : null;
-    const finalComponents = header ? [header, ...components] : components;
-    return sendTemplate(params.phoneNumber, templateName, finalComponents, languageCode);
+  const aliases = {
+    dawaa_wedding_invitation: weddingInvitationTemplate,
+    dawaa_wedding_invitation_image: weddingInvitationImageTemplate,
+    dawaa_rsvp_confirmed: rsvpConfirmedTemplate,
+    dawaa_rsvp_declined: rsvpDeclinedTemplate,
+    dawaa_rsvp_reminder: rsvpReminderTemplate,
+    dawaa_entry_card: entryCardTemplate
+  };
+
+  const templateName = aliases[requested] || requested;
+
+  // Both updated invitation templates use named variables like {{guest_name}}.
+  if (templateName === weddingInvitationTemplate || templateName === weddingInvitationImageTemplate) {
+    const isImage = templateName === weddingInvitationImageTemplate;
+    if (isImage && !imageUrl) {
+      return {
+        status: 'failed',
+        messageId: '',
+        error: 'قالب الدعوة المصور يحتاج رابط صورة',
+        requestBody: { templateName, imageUrl }
+      };
+    }
+
+    const components = invitationComponents(params, 'named');
+    const header = isImage ? imageHeaderComponent(imageUrl) : null;
+    return sendTemplate(params.phoneNumber, templateName, header ? [header, ...components] : components, languageCode);
   }
 
-  // Entry card: image header + two body variables if supplied
-  if (templateName === 'dawaa_entry_card') {
-    const components = [];
-    const header = imageHeaderComponent(imageUrl);
-    if (header) components.push(header);
-    components.push({
-      type: 'body',
-      parameters: [
-        { type: 'text', text: params.receptionTime || params.reception_time || '-' },
-        { type: 'text', text: params.locationLink || params.location_link || '-' }
-      ]
-    });
-    return sendTemplate(params.phoneNumber, templateName, components, languageCode);
+  if (templateName === entryCardTemplate) {
+    if (!imageUrl) {
+      return {
+        status: 'failed',
+        messageId: '',
+        error: 'قالب بطاقة الدخول يحتاج رابط صورة',
+        requestBody: { templateName, imageUrl }
+      };
+    }
+
+    return sendTemplate(params.phoneNumber, templateName, [
+      imageHeaderComponent(imageUrl),
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: params.receptionTime || params.reception_time || '-' },
+          { type: 'text', text: params.locationLink || params.location_link || '-' }
+        ]
+      }
+    ].filter(Boolean), languageCode);
   }
 
-  // Reminder / confirmed / declined usually have no variables
-  return sendTemplate(params.phoneNumber, templateName, [], languageCode);
+  if ([rsvpConfirmedTemplate, rsvpDeclinedTemplate, rsvpReminderTemplate].includes(templateName)) {
+    return sendTemplate(params.phoneNumber, templateName, [], languageCode);
+  }
+
+  return {
+    status: 'failed',
+    messageId: '',
+    error: `اسم القالب غير معروف داخل المشروع: ${templateName}`,
+    requestBody: { requested, templateName }
+  };
+
 }
 
 module.exports = { sendTemplate, sendWeddingInvitation, sendTemplateBySelection, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
