@@ -64,6 +64,76 @@ function packGuestNotes(guest = {}, existingNotes = '') {
   return JSON.stringify(meta);
 }
 
+
+function toDbBookingInsert(booking = {}) {
+  const payload = {
+    client_name: booking.clientName || booking.client_name || '',
+    client_phone: booking.clientPhone || booking.client_phone || '',
+    event_name: booking.eventName || booking.event_name || booking.name || 'مناسبة جديدة',
+    event_type: booking.eventType || booking.event_type || 'زفاف',
+    event_date: booking.eventDate || booking.event_date || null,
+    venue_name: booking.venueName || booking.venue_name || '',
+    location_link: booking.locationLink || booking.location_link || '',
+    reception_time: booking.receptionTime || booking.reception_time || '',
+    status: booking.status || 'planning',
+    updated_at: new Date().toISOString()
+  };
+  Object.keys(payload).forEach(k => {
+    if (payload[k] === undefined || payload[k] === '') delete payload[k];
+  });
+  return payload;
+}
+
+function fromDbBooking(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    clientName: row.client_name || row.clientName || '',
+    clientPhone: row.client_phone || row.clientPhone || '',
+    eventName: row.event_name || row.eventName || row.name || 'مناسبة',
+    eventType: row.event_type || row.eventType || 'زفاف',
+    eventDate: row.event_date || row.eventDate || '',
+    venueName: row.venue_name || row.venueName || '',
+    locationLink: row.location_link || row.locationLink || '',
+    receptionTime: row.reception_time || row.receptionTime || '',
+    status: row.status || 'planning',
+    health: row.health || 35,
+    createdAt: row.created_at || row.createdAt || new Date().toISOString(),
+    screenUploaded: Boolean(row.screen_uploaded || row.screenUploaded),
+    cardsReady: Boolean(row.cards_ready || row.cardsReady)
+  };
+}
+
+async function ensureBookingExists(booking = {}) {
+  if (!isConfigured()) return booking;
+  if (isUuid(booking.id)) return booking;
+
+  // If frontend has a previously synced UUID, use it.
+  if (isUuid(booking.dbBookingId || booking.db_booking_id)) {
+    return { ...booking, id: booking.dbBookingId || booking.db_booking_id };
+  }
+
+  const payload = toDbBookingInsert(booking);
+  const data = await request('/bookings?select=*', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(payload)
+  });
+  const saved = fromDbBooking(Array.isArray(data) ? data[0] : data);
+  return saved ? { ...booking, ...saved, localId: booking.id } : booking;
+}
+
+async function listBookings(limit = 500) {
+  if (!isConfigured()) return [];
+  try {
+    const data = await request(`/bookings?select=*&order=updated_at.desc&limit=${Number(limit)||500}`);
+    return (Array.isArray(data) ? data : []).map(fromDbBooking).filter(Boolean);
+  } catch (error) {
+    console.error('[Supabase] listBookings failed', error.message || error);
+    return [];
+  }
+}
+
 function toDbGuestUpdate(update) {
   const out = {};
   if ('cardsCount' in update) out.cards_count = Number(update.cardsCount || 1);
@@ -203,6 +273,49 @@ function normalizeIdentityName(value='') {
     .replace(/\s+/g, ' ');
 }
 
+
+async function forceDeleteGuestsByIdentity(guest = {}, booking = {}) {
+  if (!isConfigured()) return { deleted: false, reason: 'not_configured' };
+
+  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
+  const guestName = guest.guestName || guest.guest_name || guest.name || '';
+  const targetName = normalizeIdentityName(guestName);
+  const deletedIds = [];
+  const errors = [];
+
+  async function deleteById(id) {
+    if (!isUuid(id) || deletedIds.includes(id)) return;
+    try {
+      await request(`/guests?id=eq.${eq(id)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+      deletedIds.push(id);
+    } catch (error) {
+      errors.push(error.message || String(error));
+    }
+  }
+
+  const directId = guest.dbGuestId || guest.db_guest_id || guest.id;
+  await deleteById(directId);
+
+  if (phoneNumber) {
+    try {
+      const rows = await request(`/guests?phone_number=eq.${eq(phoneNumber)}&select=id,guest_name,phone_number,booking_id`);
+      for (const row of (Array.isArray(rows) ? rows : [])) {
+        if (!targetName || normalizeIdentityName(row.guest_name) === targetName) {
+          await deleteById(row.id);
+        }
+      }
+    } catch (error) {
+      errors.push(error.message || String(error));
+    }
+  }
+
+  return { deleted: deletedIds.length > 0, deletedIds, errors };
+}
+
+async function deleteGuestsByIdentity(guest = {}, booking = {}) {
+  return forceDeleteGuestsByIdentity(guest, booking);
+}
+
 async function deleteGuestsByIdentity(guest = {}, booking = {}) {
   if (!isConfigured()) return { deleted: false, reason: 'not_configured' };
   const bookingId = guest.bookingId || guest.booking_id || booking.id || booking.bookingId;
@@ -255,6 +368,7 @@ async function deleteGuest(id) {
 
 async function ensureGuestExists(guest = {}, booking = {}) {
   if (!isConfigured()) return null;
+  booking = await ensureBookingExists(booking);
   const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
   if (!phoneNumber) return null;
 
@@ -264,7 +378,7 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   // If this is a newly re-added/imported guest, never reuse previous RSVP state.
   // Hard-delete the old same booking+name+phone row first, then insert a clean pending row.
   if (forceNew) {
-    await deleteGuestsByIdentity({ ...guest, phoneNumber }, booking);
+    await forceDeleteGuestsByIdentity({ ...guest, phoneNumber }, booking);
 
     const payload = toDbGuestInsert({
       ...guest,
@@ -338,9 +452,14 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   return fromDbGuest(Array.isArray(data) ? data[0] : data);
 }
 
-async function listGuests(limit = 1000) {
+async function listGuests(limit = 1000, bookingId = '') {
   if (!isConfigured()) return [];
-  const data = await request(`/guests?select=*&order=updated_at.desc&limit=${Number(limit) || 1000}`);
+  const safeLimit = Number(limit) || 1000;
+  let path = `/guests?select=*&order=updated_at.desc&limit=${safeLimit}`;
+  if (isUuid(bookingId)) {
+    path = `/guests?booking_id=eq.${eq(bookingId)}&select=*&order=updated_at.desc&limit=${safeLimit}`;
+  }
+  const data = await request(path);
   return (Array.isArray(data) ? data : []).map(fromDbGuest).filter(Boolean);
 }
 
@@ -406,10 +525,13 @@ async function logWebhookEvent(eventType, payload) {
 
 module.exports = {
   getSupabaseAdmin,
+  ensureBookingExists,
+  listBookings,
   updateGuest,
   updateGuestByPhone,
   deleteGuest,
   deleteGuestsByIdentity,
+  forceDeleteGuestsByIdentity,
   ensureGuestExists,
   listGuests,
   getGuestByPhone,

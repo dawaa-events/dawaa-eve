@@ -1,4 +1,4 @@
-const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity } = require('./_lib/supabase');
+const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity, forceDeleteGuestsByIdentity } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -22,7 +22,9 @@ function readBody(req) {
 module.exports = async function handler(req, res) {
   try {
     if (req.method === 'GET') {
-      const guests = await listGuests(1000);
+      const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+      const bookingId = url.searchParams.get('bookingId') || '';
+      const guests = await listGuests(1000, bookingId);
       return json(res, 200, { success: true, guests });
     }
 
@@ -31,7 +33,7 @@ module.exports = async function handler(req, res) {
       let body = {};
       try { body = await readBody(req); } catch (_) {}
       if (body?.guest) {
-        const result = await deleteGuestsByIdentity(body.guest, body.booking || {});
+        const result = await forceDeleteGuestsByIdentity(body.guest, body.booking || {});
         return json(res, 200, { success: true, ...result });
       }
 

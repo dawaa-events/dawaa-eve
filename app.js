@@ -103,11 +103,47 @@ function mergeGuestsFromServer(remoteGuests=[]){
  if(changed) db.guests=[...map.values()];
  return changed;
 }
+
+async function saveBookingToServer(booking){
+  try{
+    const res=await fetch('/api/bookings-sync',{
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},
+      body:JSON.stringify({booking})
+    });
+    if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+    const data=await res.json();
+    if(!data.success || !data.booking?.id) throw new Error(data.message||'booking sync failed');
+    const oldId=booking.id;
+    const saved={...booking,...data.booking,localId:oldId};
+    db.bookings=(db.bookings||[]).map(b=>b.id===oldId?{...b,...saved}:b);
+    db.guests=(db.guests||[]).map(g=>g.bookingId===oldId?{...g,bookingId:saved.id}:g);
+    if(getSelectedBookingId()===oldId) setSelectedBookingId(saved.id);
+    return saved;
+  }catch(e){
+    console.warn('[booking sync]',e);
+    showToast('تعذر ربط المناسبة مع Supabase');
+    return booking;
+  }
+}
+
+async function ensureSelectedBookingSynced(){
+  const id=getSelectedBookingId();
+  let booking=db.bookings.find(b=>b.id===id)||db.bookings[0];
+  if(!booking) return null;
+  if(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(booking.id||''))) return booking;
+  booking=await saveBookingToServer(booking);
+  return booking;
+}
+
 async function loadGuestsFromServer({silent=true,force=false}={}){
  if(urgentSyncInFlight) return false;
  urgentSyncInFlight=true;
  try{
-  const res=await fetch('/api/guests-sync?ts='+Date.now(),{method:'GET',cache:'no-store',headers:{'Cache-Control':'no-cache'}});
+  const booking=await ensureSelectedBookingSynced();
+  const bookingId=booking?.id || getSelectedBookingId() || '';
+  const res=await fetch('/api/guests-sync?bookingId='+encodeURIComponent(bookingId)+'&ts='+Date.now(),{method:'GET',cache:'no-store',headers:{'Cache-Control':'no-cache'}});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
   const data=await res.json();
   if(!data.success) throw new Error(data.message||'sync failed');
@@ -117,10 +153,14 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
  }catch(e){console.warn('[sync]',e); if(!silent) showToast('تعذر تحديث الضيوف'); return false}
  finally{urgentSyncInFlight=false}
 }
+
 async function saveGuestsToServer(guests=[], {silent=true}={}){
  try{
-  const list=(Array.isArray(guests)?guests:[guests]).map(g=>{ if(g?.forceNew||g?.resetStatus) forgetDeletedGuestKey(g); return g?.forceNew||g?.resetStatus?{...g,dbGuestId:null,db_guest_id:null,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number(g.cardsCount||1),metaMessageId:null,invitationSentAt:null,deliveredAt:null,readAt:null,repliedAt:null}:g; }); if(!list.filter(Boolean).length) return false;
-  const booking=db.bookings.find(b=>b.id===(list[0]?.bookingId||getSelectedBookingId()))||db.bookings[0]||{};
+  let list=(Array.isArray(guests)?guests:[guests]).map(g=>{ if(g?.forceNew||g?.resetStatus) forgetDeletedGuestKey(g); return g?.forceNew||g?.resetStatus?{...g,dbGuestId:null,db_guest_id:null,rsvpStatus:'pending',confirmedCount:0,declinedCount:0,pendingCount:Number(g.cardsCount||1),metaMessageId:null,invitationSentAt:null,deliveredAt:null,readAt:null,repliedAt:null}:g; });
+  if(!list.filter(Boolean).length) return false;
+  let booking=db.bookings.find(b=>b.id===(list[0]?.bookingId||getSelectedBookingId()))||db.bookings[0]||{};
+  booking=await saveBookingToServer(booking);
+  list=list.map(g=>({...g,bookingId:booking.id}));
   const res=await fetch('/api/guests-sync',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({booking,guests:list})});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
   const data=await res.json(); if(!data.success) throw new Error(data.message||'save failed');
@@ -128,6 +168,7 @@ async function saveGuestsToServer(guests=[], {silent=true}={}){
   if(!silent) showToast('تمت مزامنة الضيوف');
   return true;
  }catch(e){console.warn('[save sync]',e); if(!silent) showToast('تعذر حفظ الضيوف'); return false}
+
 }
 
 const $ = (s, r=document) => r.querySelector(s);
@@ -746,7 +787,19 @@ function closeModal(id){
   if(id==='demoCompleteModal') saveDemoRatingToAdmin();
   $('#'+id)?.classList.remove('open');
 }
-function saveLead(){const name=$('#leadName').value.trim(); if(!name) return showToast('اكتبي الاسم أولاً'); const bookings=db.bookings; bookings.unshift({id:uid(),clientName:name,clientPhone:$('#leadPhone').value,eventName:`${$('#leadType').value} ${name}`,eventType:$('#leadType').value,eventDate:new Date(Date.now()+86400000*30).toISOString().slice(0,10),venueName:'لم يؤكد التحديد',receptionTime:'8:00 مساءً',health:28,status:'lead',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=bookings; closeModal('bookingModal'); showToast('تم حفظ الطلب داخل النظام');}
+async function saveLead(){
+ const name=$('#leadName').value.trim();
+ if(!name) return showToast('اكتبي الاسم أولاً');
+ let booking={id:uid(),clientName:name,clientPhone:$('#leadPhone').value,eventName:`${$('#leadType').value} ${name}`,eventType:$('#leadType').value,eventDate:new Date(Date.now()+86400000*30).toISOString().slice(0,10),venueName:'لم يؤكد التحديد',receptionTime:'8:00 مساءً',health:28,status:'lead',createdAt:now(),screenUploaded:false,cardsReady:false};
+ booking=await saveBookingToServer(booking);
+ const bookings=db.bookings.filter(b=>b.id!==booking.id && b.localId!==booking.localId);
+ bookings.unshift(booking);
+ db.bookings=bookings;
+ setSelectedBookingId(booking.id);
+ closeModal('bookingModal');
+ showToast('تم حفظ الطلب وربطه بالمزامنة');
+ render();
+}
 function renderDemo(){let data=JSON.parse(sessionStorage.getItem('demo')||'{}'); let step=Number(data.step||1); app.innerHTML=nav()+`<main class="container section"><div class="demo-wrap"><div class="wizard route-page"><h2>🎯 تجربة دعوة التفاعلية</h2><div class="wizard-steps">${[1,2,3,4,5].map(i=>`<span class="chip ${i===step?'active':''}">${i}</span>`).join('')}</div><div id="demoStep"></div></div><div class="preview-card" id="demoPreview"></div></div></main>`; renderDemoStep(step); afterRender();}
 function renderDemoStep(step){const d=JSON.parse(sessionStorage.getItem('demo')||'{}'); const box=$('#demoStep'); const prev=$('#demoPreview'); prev.className='demo-phone-holder live-preview-holder'; prev.innerHTML=whatsappPhonePreview({guest:d.guest1||d.name||'أمينة بنت محمد',groom:d.groom||'محمد',bride:d.bride||'مريم',venue:d.venue||'قاعة المرجان',date:d.date||'15 أكتوبر 2026',cards:d.cards1||1});
  if(step===1) box.innerHTML=`<h3>بيانات العميل</h3><div class="live-hint">كل حرف تكتبينه يظهر مباشرة في المعاينة 👈</div><div class="field"><label>اسمك</label><input id="demoName" data-live="1" value="${d.name||''}" placeholder="مثال: وضحة"></div><div class="field"><label>رقم الهاتف</label><input id="demoPhone" data-live="1" value="${d.phone||''}" placeholder="9689XXXXXXX"></div><button class="btn btn-primary" onclick="demoSave(2)">التالي</button>`;
@@ -1813,7 +1866,20 @@ function setDemoRating(n){
 
 function eventModal(){return `<div class="modal" id="eventModal"><div class="modal-box"><h2>حجز جديد</h2><div class="form-row"><div class="field"><label>اسم العميل</label><input id="evClient"></div><div class="field"><label>رقم الهاتف</label><input id="evPhone"></div></div><div class="form-row"><div class="field"><label>اسم المناسبة</label><input id="evName"></div><div class="field"><label>التاريخ</label><input id="evDate" type="date"></div></div><div class="field"><label>القاعة</label><input id="evVenue"></div><button class="btn btn-primary" onclick="saveEvent()">حفظ الحجز</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">إغلاق</button></div></div>`}
 function openEventModal(){$('#eventModal').classList.add('open')}
-function saveEvent(){const name=$('#evName').value.trim(); if(!name)return showToast('اكتبي اسم المناسبة'); const b=db.bookings; b.unshift({id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false}); db.bookings=b; closeModal('eventModal'); showToast('تم إنشاء الحجز'); render()}
+async function saveEvent(){
+ const name=$('#evName').value.trim();
+ if(!name)return showToast('اكتبي اسم المناسبة');
+ let booking={id:uid(),clientName:$('#evClient').value,clientPhone:$('#evPhone').value,eventName:name,eventType:'زفاف',eventDate:$('#evDate').value||new Date().toISOString(),venueName:$('#evVenue').value,health:35,status:'planning',createdAt:now(),screenUploaded:false,cardsReady:false};
+ showToast('جاري ربط المناسبة مع Supabase...');
+ booking=await saveBookingToServer(booking);
+ const b=db.bookings.filter(x=>x.id!==booking.id && x.localId!==booking.localId);
+ b.unshift(booking);
+ db.bookings=b;
+ setSelectedBookingId(booking.id);
+ closeModal('eventModal');
+ showToast('تم إنشاء الحجز وربطه بالمزامنة');
+ render();
+}
 function guestModal(){return `<div class="modal" id="guestModal"><div class="modal-box"><h2 id="guestModalTitle">إضافة ضيف</h2><input type="hidden" id="gEditingId"><div class="field"><label>الحجز</label><select id="gBooking">${db.bookings.map(b=>`<option value="${b.id}" ${b.id===getSelectedBookingId()?'selected':''}>${b.eventName}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label>رقم الترتيب</label><input id="gOrder" type="number" min="1" placeholder="مثال: 1"></div><div class="field"><label>اسم الضيف</label><input id="gName"></div></div><div class="form-row"><div class="field"><label>الهاتف</label><input id="gPhone"></div><div class="field"><label>عدد البطاقات</label><input id="gCards" type="number" value="1"></div></div><div class="form-row"><div class="field"><label>تصنيف القائمة</label><select id="gCategory"><option value="bride">قائمة العروس</option><option value="groom">قائمة المعرس</option><option value="edited">قائمة معدلة</option><option value="backup">قائمة احتياط</option></select></div></div><button class="btn btn-primary" onclick="saveGuest()">حفظ الضيف</button><button class="btn btn-ghost" onclick="closeModal('guestModal')">إغلاق</button></div></div>`}
 function openGuestModal(){
  const m=$('#guestModal');
