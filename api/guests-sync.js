@@ -1,4 +1,4 @@
-const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity, forceDeleteGuestsByIdentity } = require('./_lib/supabase');
+const { listGuests, ensureGuestExists, deleteGuest, forceDeleteGuestsByIdentity } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -32,17 +32,19 @@ module.exports = async function handler(req, res) {
     if (req.method === 'DELETE') {
       let body = {};
       try { body = await readBody(req); } catch (_) {}
-      if (body?.guest) {
-        const result = await forceDeleteGuestsByIdentity(body.guest, body.booking || {});
-        return json(res, 200, { success: true, ...result });
-      }
-
       const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
       const id = url.searchParams.get('id');
-      if (!id) return json(res, 400, { success: false, message: 'Missing guest id' });
-      const result = await deleteGuest(id);
-      if (!result) return json(res, 404, { success: false, message: 'Guest not deleted or not found' });
-      return json(res, 200, { success: true, deleted: true, id });
+
+      let result = null;
+      if (body?.guest && typeof forceDeleteGuestsByIdentity === 'function') {
+        result = await forceDeleteGuestsByIdentity(body.guest, body.booking || {});
+      }
+      if (id) {
+        const deleted = await deleteGuest(id);
+        result = { ...(result || {}), idDeleted: Boolean(deleted), id };
+      }
+      if (!id && !body?.guest) return json(res, 400, { success:false, message:'Missing guest or id' });
+      return json(res, 200, { success:true, deleted:true, ...(result || {}) });
     }
 
     if (req.method === 'POST') {

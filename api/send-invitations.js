@@ -59,7 +59,7 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
-      const guest = await ensureGuestExists(originalGuest, booking).catch(() => null);
+      const guest = await ensureGuestExists({ ...originalGuest, forceNew:false, resetStatus:false }, booking).catch(() => null);
       const guestId = guest?.id || originalGuest.id;
 
       const result = await sendTemplateBySelection({
