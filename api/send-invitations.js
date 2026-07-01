@@ -44,7 +44,7 @@ module.exports = async function handler(req, res) {
 
     if (!guests.length) return json(res, 400, { success:false, message:'لا يوجد ضيوف للإرسال' });
 
-    if ((templateName === 'dawaa_wedding_invitation_image' || templateName === 'dawaa_entry_card') && !invitationImageUrl) {
+    if (templateName === 'dawaa_wedding_invitation_image' && !invitationImageUrl) {
       return json(res, 400, { success:false, message:`القالب ${templateName} يحتاج رابط صورة` });
     }
 
@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
         cardsCount,
         receptionTime: booking.receptionTime || booking.reception_time || '-',
         locationLink: booking.locationLink || booking.location_link || '-',
-        parameterMode: 'named'
+        parameterMode: 'registry'
       });
 
       if (result.status === 'sent') {

@@ -1,5 +1,5 @@
-// DAWAA WhatsApp Meta configuration
-// These names must match Meta WhatsApp Manager exactly.
+// DAWAA WhatsApp / Meta configuration
+// This file is intentionally explicit because Meta templates were rebuilt/updated.
 
 function env(name, fallback = '') {
   return process.env[name] || fallback;
@@ -10,29 +10,29 @@ const metaAccessToken = env('META_ACCESS_TOKEN', env('WHATSAPP_ACCESS_TOKEN', ''
 const metaPhoneNumberId = env('META_PHONE_NUMBER_ID', env('WHATSAPP_PHONE_NUMBER_ID', ''));
 const defaultLanguage = env('META_TEMPLATE_LANGUAGE', 'ar');
 
-// Exact templates currently active in Meta:
-const weddingInvitationTemplate = env('DAWAA_WEDDING_INVITATION_TEMPLATE', 'dawaa_wedding_invitation');
-const weddingInvitationImageTemplate = env('DAWAA_WEDDING_INVITATION_IMAGE_TEMPLATE', 'dawaa_wedding_invitation_image');
-const rsvpConfirmedTemplate = env('DAWAA_RSVP_CONFIRMED_TEMPLATE', 'dawaa_rsvp_confirmed');
-const rsvpDeclinedTemplate = env('DAWAA_RSVP_DECLINED_TEMPLATE', 'dawaa_rsvp_declined');
-const rsvpReminderTemplate = env('DAWAA_RSVP_REMINDER_TEMPLATE', 'dawaa_rsvp_reminder');
-const entryCardTemplate = env('DAWAA_ENTRY_CARD_TEMPLATE', 'dawaa_entry_card');
-
-// Important:
-// Your current no-image invitation in Meta shows named variables like {{guest_name}}.
-// Therefore default mode must be named, not numbered.
-const templateParameterMode = env('DAWAA_TEMPLATE_PARAMETER_MODE', 'named');
+// Current approved template names in Meta WhatsApp Manager:
+const templates = {
+  weddingInvitation: env('DAWAA_WEDDING_INVITATION_TEMPLATE', 'dawaa_wedding_invitation'),
+  weddingInvitationImage: env('DAWAA_WEDDING_INVITATION_IMAGE_TEMPLATE', 'dawaa_wedding_invitation_image'),
+  rsvpConfirmed: env('DAWAA_RSVP_CONFIRMED_TEMPLATE', 'dawaa_rsvp_confirmed'),
+  rsvpDeclined: env('DAWAA_RSVP_DECLINED_TEMPLATE', 'dawaa_rsvp_declined'),
+  entryCard: env('DAWAA_ENTRY_CARD_TEMPLATE', 'dawaa_entry_card'),
+  rsvpReminder: env('DAWAA_RSVP_REMINDER_TEMPLATE', 'dawaa_rsvp_reminder')
+};
 
 module.exports = {
   metaApiVersion,
   metaAccessToken,
   metaPhoneNumberId,
   defaultLanguage,
-  templateParameterMode,
-  weddingInvitationTemplate,
-  weddingInvitationImageTemplate,
-  rsvpConfirmedTemplate,
-  rsvpDeclinedTemplate,
-  rsvpReminderTemplate,
-  entryCardTemplate
+  templates,
+
+  // Backward-compatible exports used by older webhook code:
+  weddingInvitationTemplate: templates.weddingInvitation,
+  weddingInvitationImageTemplate: templates.weddingInvitationImage,
+  rsvpConfirmedTemplate: templates.rsvpConfirmed,
+  rsvpDeclinedTemplate: templates.rsvpDeclined,
+  rsvpReminderTemplate: templates.rsvpReminder,
+  entryCardTemplate: templates.entryCard,
+  templateParameterMode: 'named'
 };

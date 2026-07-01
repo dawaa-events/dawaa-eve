@@ -1,18 +1,226 @@
-const { metaApiVersion, metaAccessToken, metaPhoneNumberId, defaultLanguage, templateParameterMode, weddingInvitationTemplate, weddingInvitationImageTemplate, rsvpConfirmedTemplate, rsvpDeclinedTemplate, rsvpReminderTemplate, entryCardTemplate } = require('./config');
+const {
+  metaApiVersion,
+  metaAccessToken,
+  metaPhoneNumberId,
+  defaultLanguage,
+  templates
+} = require('./config');
+
+const TEMPLATE_DEFINITIONS = {
+  [templates.weddingInvitation]: {
+    key: 'weddingInvitation',
+    category: 'Marketing',
+    hasImageHeader: false,
+    bodyMode: 'named',
+    bodyParams: ['guest_name', 'host_one', 'host_two', 'bride_name', 'groom_name', 'cards_count']
+  },
+  [templates.weddingInvitationImage]: {
+    key: 'weddingInvitationImage',
+    category: 'Marketing',
+    hasImageHeader: true,
+    bodyMode: 'named',
+    bodyParams: ['guest_name', 'host_one', 'host_two', 'bride_name', 'groom_name', 'cards_count']
+  },
+  [templates.rsvpConfirmed]: {
+    key: 'rsvpConfirmed',
+    category: 'Marketing',
+    hasImageHeader: false,
+    bodyMode: 'none',
+    bodyParams: []
+  },
+  [templates.rsvpDeclined]: {
+    key: 'rsvpDeclined',
+    category: 'Marketing',
+    hasImageHeader: false,
+    bodyMode: 'none',
+    bodyParams: []
+  },
+  [templates.entryCard]: {
+    key: 'entryCard',
+    category: 'Utility',
+    hasImageHeader: true,
+    bodyMode: 'numbered',
+    bodyParams: ['reception_time', 'location_link']
+  },
+  [templates.rsvpReminder]: {
+    key: 'rsvpReminder',
+    category: 'Utility',
+    hasImageHeader: false,
+    bodyMode: 'none',
+    bodyParams: []
+  }
+};
+
+const TEMPLATE_ALIASES = {
+  dawaa_wedding_invitation: templates.weddingInvitation,
+  wedding_invitation: templates.weddingInvitation,
+  invitation: templates.weddingInvitation,
+
+  dawaa_wedding_invitation_image: templates.weddingInvitationImage,
+  wedding_invitation_image: templates.weddingInvitationImage,
+  invitation_image: templates.weddingInvitationImage,
+
+  dawaa_rsvp_confirmed: templates.rsvpConfirmed,
+  rsvp_confirmed: templates.rsvpConfirmed,
+  confirmed: templates.rsvpConfirmed,
+
+  dawaa_rsvp_declined: templates.rsvpDeclined,
+  rsvp_declined: templates.rsvpDeclined,
+  declined: templates.rsvpDeclined,
+
+  dawaa_entry_card: templates.entryCard,
+  entry_card: templates.entryCard,
+
+  dawaa_rsvp_reminder: templates.rsvpReminder,
+  rsvp_reminder: templates.rsvpReminder,
+  reminder: templates.rsvpReminder
+};
+
+function normalizeTemplateName(name) {
+  const requested = String(name || templates.weddingInvitation).trim();
+  return TEMPLATE_ALIASES[requested] || requested;
+}
+
+function asText(value, fallback = '-') {
+  const text = value === undefined || value === null || value === '' ? fallback : String(value);
+  return text;
+}
+
+function templateValue(params, name) {
+  const values = {
+    guest_name: params.guestName || params.guest_name || params.name,
+    host_one: params.hostOne || params.host_one,
+    host_two: params.hostTwo || params.host_two,
+    bride_name: params.brideName || params.bride_name,
+    groom_name: params.groomName || params.groom_name,
+    cards_count: params.cardsCount || params.cards_count || params.cards || 1,
+    reception_time: params.receptionTime || params.reception_time,
+    location_link: params.locationLink || params.location_link
+  };
+  return asText(values[name], name === 'cards_count' ? '1' : '-');
+}
+
+function imageHeaderComponent(imageUrl) {
+  if (!imageUrl) return null;
+  return {
+    type: 'header',
+    parameters: [
+      {
+        type: 'image',
+        image: { link: imageUrl }
+      }
+    ]
+  };
+}
+
+function bodyComponent(definition, params) {
+  if (!definition.bodyParams || !definition.bodyParams.length || definition.bodyMode === 'none') {
+    return null;
+  }
+
+  const parameters = definition.bodyParams.map((name) => {
+    const item = {
+      type: 'text',
+      text: templateValue(params, name)
+    };
+
+    // Updated invitation templates use named parameters like {{guest_name}}.
+    if (definition.bodyMode === 'named') {
+      item.parameter_name = name;
+    }
+
+    return item;
+  });
+
+  return {
+    type: 'body',
+    parameters
+  };
+}
+
+function buildTemplateComponents(templateName, params = {}) {
+  const definition = TEMPLATE_DEFINITIONS[templateName];
+  if (!definition) {
+    return {
+      ok: false,
+      error: `Unknown WhatsApp template: ${templateName}`,
+      components: []
+    };
+  }
+
+  const imageUrl = params.imageUrl || params.invitationImageUrl || params.cardUrl || params.entryCardUrl || '';
+  const components = [];
+
+  if (definition.hasImageHeader) {
+    if (!imageUrl) {
+      return {
+        ok: false,
+        error: `Template ${templateName} requires image header but no image URL was provided`,
+        components: []
+      };
+    }
+    components.push(imageHeaderComponent(imageUrl));
+  }
+
+  const body = bodyComponent(definition, params);
+  if (body) components.push(body);
+
+  return { ok: true, components, definition };
+}
+
 async function postMetaMessage(body) {
   if (!metaAccessToken || !metaPhoneNumberId) {
-    return { status: 'failed', messageId: '', error: 'Meta API credentials are not configured', requestBody: body };
+    return {
+      status: 'failed',
+      messageId: '',
+      error: 'Meta API credentials are not configured',
+      requestBody: body
+    };
   }
+
   const url = `https://graph.facebook.com/${metaApiVersion}/${metaPhoneNumberId}/messages`;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${metaAccessToken}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${metaAccessToken}`
+    },
     body: JSON.stringify(body)
   });
+
   const text = await response.text();
-  if (!response.ok) return { status: 'failed', messageId: '', error: `HTTP ${response.status}: ${text}`, requestBody: body };
-  const data = JSON.parse(text || '{}');
-  return { status: 'sent', messageId: data.messages?.[0]?.id || '', raw: data };
+  let data = {};
+  try { data = JSON.parse(text || '{}'); } catch (_) { data = { raw: text }; }
+
+  if (!response.ok) {
+    return {
+      status: 'failed',
+      messageId: '',
+      error: data?.error?.message || `HTTP ${response.status}: ${text}`,
+      errorCode: data?.error?.code || '',
+      errorSubcode: data?.error?.error_subcode || '',
+      requestBody: body,
+      raw: data
+    };
+  }
+
+  const messageId = data.messages?.[0]?.id || '';
+  if (!messageId) {
+    return {
+      status: 'failed',
+      messageId: '',
+      error: 'Meta accepted the request but did not return a message id',
+      requestBody: body,
+      raw: data
+    };
+  }
+
+  return {
+    status: 'sent',
+    messageId,
+    raw: data,
+    requestBody: body
+  };
 }
 
 async function sendTemplate(phoneNumber, templateName, components = [], languageCode = defaultLanguage) {
@@ -21,62 +229,63 @@ async function sendTemplate(phoneNumber, templateName, components = [], language
     recipient_type: 'individual',
     to: phoneNumber,
     type: 'template',
-    template: { name: templateName, language: { code: languageCode } }
+    template: {
+      name: templateName,
+      language: { code: languageCode }
+    }
   };
-  if (components && components.length) body.template.components = components;
+
+  if (components && components.length) {
+    body.template.components = components;
+  }
+
   return postMetaMessage(body);
 }
 
-const invitationValues = ({ guestName, hostOne, hostTwo, brideName, groomName, cardsCount }) => ([
-  ['guest_name', guestName || '-'],
-  ['host_one', hostOne || '-'],
-  ['host_two', hostTwo || '-'],
-  ['bride_name', brideName || '-'],
-  ['groom_name', groomName || '-'],
-  ['cards_count', String(cardsCount || 1)]
-]);
+async function sendTemplateBySelection(params = {}) {
+  const templateName = normalizeTemplateName(params.templateName || params.template);
+  const definition = TEMPLATE_DEFINITIONS[templateName];
 
-function invitationComponents(params, mode = 'named') {
-  return [{
-    type: 'body',
-    parameters: invitationValues(params).map(([parameter_name, text]) => {
-      const item = { type: 'text', text };
-      if (mode === 'named') item.parameter_name = parameter_name;
-      return item;
-    })
-  }];
-}
-
-function looksLikeParameterModeError(error = '') {
-  const e = String(error).toLowerCase();
-  return e.includes('parameter_name') || e.includes('localizable_params') || e.includes('number of localizable params') || e.includes('invalid parameter') || e.includes('missing parameter');
-}
-
-async function sendWeddingInvitation(params) {
-  const templateName = params.templateName || 'dawaa_wedding_invitation';
-  const languageCode = params.languageCode || defaultLanguage;
-  const mode = String(params.parameterMode || templateParameterMode || 'auto').toLowerCase();
-
-  if (mode === 'named' || mode === 'numbered') {
-    return sendTemplate(params.phoneNumber, templateName, invitationComponents(params, mode), languageCode);
+  if (!definition) {
+    return {
+      status: 'failed',
+      messageId: '',
+      error: `Template not registered in project: ${templateName}`,
+      requestBody: { requested: params.templateName || params.template, templateName }
+    };
   }
 
-  // Auto mode: try named variables first because the supplied developer package uses names.
-  // If Meta rejects the parameter format, retry numbered {{1}}..{{6}} templates automatically.
-  const named = await sendTemplate(params.phoneNumber, templateName, invitationComponents(params, 'named'), languageCode);
-  if (named.status === 'sent' || !looksLikeParameterModeError(named.error)) return named;
+  const built = buildTemplateComponents(templateName, params);
+  if (!built.ok) {
+    return {
+      status: 'failed',
+      messageId: '',
+      error: built.error,
+      requestBody: { templateName, paramsPreview: {
+        phoneNumber: params.phoneNumber,
+        imageUrl: params.imageUrl || params.invitationImageUrl || params.cardUrl || params.entryCardUrl || '',
+        guestName: params.guestName,
+        cardsCount: params.cardsCount
+      }}
+    };
+  }
 
-  const numbered = await sendTemplate(params.phoneNumber, templateName, invitationComponents(params, 'numbered'), languageCode);
-  if (numbered.status === 'sent') return { ...numbered, retriedParameterMode: 'numbered', firstAttemptError: named.error };
-  return { ...numbered, firstAttemptError: named.error };
+  return sendTemplate(params.phoneNumber, templateName, built.components, params.languageCode || defaultLanguage);
+}
+
+async function sendWeddingInvitation(params = {}) {
+  return sendTemplateBySelection({
+    ...params,
+    templateName: params.templateName || templates.weddingInvitation
+  });
 }
 
 async function sendRsvpConfirmed(phoneNumber) {
-  return sendTemplate(phoneNumber, rsvpConfirmedTemplate, [], defaultLanguage);
+  return sendTemplateBySelection({ phoneNumber, templateName: templates.rsvpConfirmed });
 }
 
 async function sendRsvpDeclined(phoneNumber) {
-  return sendTemplate(phoneNumber, rsvpDeclinedTemplate, [], defaultLanguage);
+  return sendTemplateBySelection({ phoneNumber, templateName: templates.rsvpDeclined });
 }
 
 async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
@@ -114,86 +323,12 @@ async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
   });
 }
 
-
-function imageHeaderComponent(imageUrl) {
-  if (!imageUrl) return null;
-  return {
-    type: 'header',
-    parameters: [
-      {
-        type: 'image',
-        image: { link: imageUrl }
-      }
-    ]
-  };
-}
-
-async function sendTemplateBySelection(params = {}) {
-  const requested = params.templateName || params.template || weddingInvitationTemplate;
-  const languageCode = params.languageCode || defaultLanguage;
-  const imageUrl = params.imageUrl || params.invitationImageUrl || params.cardUrl || '';
-
-  const aliases = {
-    dawaa_wedding_invitation: weddingInvitationTemplate,
-    dawaa_wedding_invitation_image: weddingInvitationImageTemplate,
-    dawaa_rsvp_confirmed: rsvpConfirmedTemplate,
-    dawaa_rsvp_declined: rsvpDeclinedTemplate,
-    dawaa_rsvp_reminder: rsvpReminderTemplate,
-    dawaa_entry_card: entryCardTemplate
-  };
-
-  const templateName = aliases[requested] || requested;
-
-  // Both updated invitation templates use named variables like {{guest_name}}.
-  if (templateName === weddingInvitationTemplate || templateName === weddingInvitationImageTemplate) {
-    const isImage = templateName === weddingInvitationImageTemplate;
-    if (isImage && !imageUrl) {
-      return {
-        status: 'failed',
-        messageId: '',
-        error: 'قالب الدعوة المصور يحتاج رابط صورة',
-        requestBody: { templateName, imageUrl }
-      };
-    }
-
-    const components = invitationComponents(params, 'named');
-    const header = isImage ? imageHeaderComponent(imageUrl) : null;
-    return sendTemplate(params.phoneNumber, templateName, header ? [header, ...components] : components, languageCode);
-  }
-
-  if (templateName === entryCardTemplate) {
-    if (!imageUrl) {
-      return {
-        status: 'failed',
-        messageId: '',
-        error: 'قالب بطاقة الدخول يحتاج رابط صورة',
-        requestBody: { templateName, imageUrl }
-      };
-    }
-
-    return sendTemplate(params.phoneNumber, templateName, [
-      imageHeaderComponent(imageUrl),
-      {
-        type: 'body',
-        parameters: [
-          { type: 'text', text: params.receptionTime || params.reception_time || '-' },
-          { type: 'text', text: params.locationLink || params.location_link || '-' }
-        ]
-      }
-    ].filter(Boolean), languageCode);
-  }
-
-  if ([rsvpConfirmedTemplate, rsvpDeclinedTemplate, rsvpReminderTemplate].includes(templateName)) {
-    return sendTemplate(params.phoneNumber, templateName, [], languageCode);
-  }
-
-  return {
-    status: 'failed',
-    messageId: '',
-    error: `اسم القالب غير معروف داخل المشروع: ${templateName}`,
-    requestBody: { requested, templateName }
-  };
-
-}
-
-module.exports = { sendTemplate, sendWeddingInvitation, sendTemplateBySelection, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
+module.exports = {
+  TEMPLATE_DEFINITIONS,
+  sendTemplate,
+  sendWeddingInvitation,
+  sendTemplateBySelection,
+  sendRsvpConfirmed,
+  sendRsvpDeclined,
+  sendCardCountSelection
+};
