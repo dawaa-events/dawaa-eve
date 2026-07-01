@@ -110,6 +110,7 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
   const res=await fetch('/api/guests-sync?ts='+Date.now(),{method:'GET',cache:'no-store',headers:{'Cache-Control':'no-cache'}});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
   const data=await res.json();
+  console.log('[DAWAA SEND API RESPONSE]', data);
   if(!data.success) throw new Error(data.message||'sync failed');
   const changed=mergeGuestsFromServer(data.guests||[]);
   if(!silent) showToast(changed?'تم تحديث الضيوف':'الضيوف محدثين');
@@ -1069,7 +1070,50 @@ function selectAllVisibleGuests(){filteredGuestsList().forEach(g=>selectedGuestI
 function clearGuestSelection(){selectedGuestIds.clear(); renderGuestListOnly()}
 function deleteSelectedGuests(){if(!selectedGuestIds.size)return showToast('اختاري ضيوف أولاً'); if(!confirm('حذف الضيوف المحددين؟'))return; db.guests=db.guests.filter(g=>!selectedGuestIds.has(g.id)); selectedGuestIds.clear(); showToast('تم حذف الضيوف المحددين'); render()}
 function bulkSetStatus(st){if(!selectedGuestIds.size)return showToast('اختاري ضيوف أولاً'); db.guests=db.guests.map(g=>selectedGuestIds.has(g.id)?{...g,rsvpStatus:st,repliedAt:st==='pending'?null:now(),confirmedCount:st==='confirmed'?g.cardsCount:0,declinedCount:st==='declined'?g.cardsCount:0,pendingCount:st==='pending'?g.cardsCount:0}:g); showToast('تم تحديث الحالة'); render()}
-async function sendSelectedGuests(){if(!selectedGuestIds.size)return showToast('اختاري ضيوف أولاً'); const guests=db.guests.filter(g=>selectedGuestIds.has(g.id)); return apiSendGuests(guests, 'دعوة محددة')}
+async function sendSelectedGuests(){ return dawaaForceSendSelected(); }
+
+
+/* DAWAA SEND BUTTON SAFETY PATCH */
+function dawaaDebugSend(...args){
+  try { console.log('[DAWAA SEND]', ...args); } catch(e){}
+}
+async function dawaaForceSendSelected(){
+  dawaaDebugSend('CLICK selected button', { selectedCount: selectedGuestIds?.size || 0 });
+  if(!selectedGuestIds || !selectedGuestIds.size){
+    showToast('اختاري ضيف واحد على الأقل');
+    return false;
+  }
+  const guests=(db.guests||[]).filter(g=>selectedGuestIds.has(g.id));
+  dawaaDebugSend('selected guests', guests.map(g=>({id:g.id,name:g.guestName,phone:g.phoneNumber,status:g.rsvpStatus})));
+  if(!guests.length){
+    showToast('لم يتم العثور على الضيوف المحددين');
+    return false;
+  }
+  return apiSendGuests(guests, 'دعوة محددة');
+}
+async function dawaaForceSendGuest(id){
+  dawaaDebugSend('CLICK guest send', id);
+  const g=(db.guests||[]).find(x=>String(x.id)===String(id));
+  if(!g){
+    showToast('لم يتم العثور على الضيف');
+    return false;
+  }
+  return apiSendGuests([g], 'دعوة');
+}
+document.addEventListener('click', function(e){
+  const el=e.target.closest('button');
+  if(!el) return;
+  const txt=(el.textContent||'').trim();
+  if(txt === 'إرسال المحددين'){
+    e.preventDefault();
+    e.stopPropagation();
+    dawaaForceSendSelected();
+    return;
+  }
+}, true);
+window.dawaaForceSendSelected=dawaaForceSendSelected;
+window.dawaaForceSendGuest=dawaaForceSendGuest;
+window.sendSelectedGuests=dawaaForceSendSelected;
 
 function triggerImportGuests(){$('#guestImportFile')?.click()}
 
@@ -1579,6 +1623,7 @@ function adminSend(){
 }
 async function apiSendGuests(guestList, label='الدعوات'){
  if(!guestList.length) return showToast('لا يوجد ضيوف للإرسال');
+ console.log('[DAWAA SEND API START]', {count:guestList.length, guests:guestList.map(g=>({id:g.id,name:g.guestName,phone:g.phoneNumber,status:g.rsvpStatus}))});
  const booking=db.bookings.find(b=>b.id===(guestList[0]?.bookingId || getSelectedBookingId())) || {};
  showToast(`جاري إرسال ${guestList.length} ${label} عبر WhatsApp...`);
  try{
