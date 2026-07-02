@@ -187,6 +187,41 @@ async function updateGuest(id, update) {
 }
 
 async function updateGuestByPhone(phoneNumber, update) {
+  if (!isConfigured() || !phoneNumber) return null;
+  const variants = phoneVariants(phoneNumber);
+  const payload = toDbGuestUpdate(update);
+  const results = [];
+
+  // First update direct phone_number matches. This is the real column used by the project.
+  for (const v of variants) {
+    try {
+      const data = await request(`/guests?phone_number=eq.${eq(v)}&select=*`, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify(payload)
+      });
+      if (Array.isArray(data) && data.length) results.push(...data);
+    } catch (error) {
+      console.warn('[Supabase] updateGuestByPhone phone_number failed', error.message || error);
+    }
+  }
+
+  // Optional compatibility with old schemas that had "phone".
+  for (const v of variants) {
+    try {
+      const data = await request(`/guests?phone=eq.${eq(v)}&select=*`, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify(payload)
+      });
+      if (Array.isArray(data) && data.length) results.push(...data);
+    } catch (_) {
+      // Ignore missing phone column.
+    }
+  }
+
+  if (results.length) return fromDbGuest(results[0]);
+
   const guest = await getGuestByPhone(phoneNumber);
   if (!guest?.id) return null;
   return updateGuest(guest.id, update);
@@ -531,6 +566,28 @@ async function insertMessage(message) {
   }
 }
 
+
+async function updateMessageByMetaId(metaMessageId, update = {}) {
+  if (!isConfigured() || !metaMessageId) return null;
+  const payload = {};
+  if ('status' in update) payload.status = update.status;
+  if ('failureReason' in update) payload.failure_reason = update.failureReason;
+  if ('deliveredAt' in update && update.deliveredAt) payload.delivered_at = update.deliveredAt;
+  if ('readAt' in update && update.readAt) payload.read_at = update.readAt;
+  payload.updated_at = new Date().toISOString();
+
+  try {
+    return await request(`/messages?meta_message_id=eq.${eq(metaMessageId)}&select=*`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    console.error('[Supabase] updateMessageByMetaId failed', error.message || error);
+    return null;
+  }
+}
+
 async function logTimeline(guest, eventType, eventData = {}, source = 'meta') {
   if (!isConfigured() || !isUuid(guest?.id)) return null;
   try {
@@ -579,6 +636,7 @@ module.exports = {
   getGuestByPhone,
   getGuestByMetaMessageId,
   insertMessage,
+  updateMessageByMetaId,
   logTimeline,
   logWebhookEvent,
   isUuid,
