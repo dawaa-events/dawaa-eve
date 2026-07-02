@@ -20,6 +20,8 @@ function normalizeRemoteGuest(g, fallbackBookingId=''){
   readAt:g.readAt||g.read_at||null,
   repliedAt:g.repliedAt||g.replied_at||null,
   metaMessageId:g.metaMessageId||g.meta_message_id||null,
+  createdAt:g.createdAt||g.created_at||null,
+  updatedAt:g.updatedAt||g.updated_at||null,
   shortCode:g.shortCode||g.short_code||'',
   notes:g.notes||'',
     orderNumber: Number(g.orderNumber || g.order_number || 0) || null,
@@ -89,6 +91,95 @@ function forgetDeletedGuestKey(g){
   localStorage.setItem('dawaa_deleted_guest_keys', JSON.stringify(list));
 }
 
+
+function normalizeGuestNameForDedupe(value=''){
+  return String(value||'').trim().toLowerCase()
+    .replace(/[ً-ٰٟ]/g,'')
+    .replace(/[أإآٱ]/g,'ا')
+    .replace(/ؤ/g,'و').replace(/ئ/g,'ي').replace(/ى/g,'ي').replace(/ة/g,'ه')
+    .replace(/\s+/g,' ');
+}
+function guestDedupeKey(g){
+  return [
+    String(g?.bookingId || getSelectedBookingId() || ''),
+    String(g?.phoneNumber || '').replace(/\D/g,''),
+    normalizeGuestNameForDedupe(g?.guestName || '')
+  ].join('|');
+}
+function dedupeGuestArray(list=[]){
+  const map=new Map();
+  for(const g of list||[]){
+    const key=guestDedupeKey(g);
+    if(!key || key.split('|').filter(Boolean).length<2) continue;
+    const old=map.get(key);
+    if(!old){ map.set(key,g); continue; }
+    const score=x=>
+      (x?.dbGuestId?100:0)+
+      (x?.metaMessageId?80:0)+
+      (['confirmed','declined','sent','delivered','read'].includes(x?.rsvpStatus)?50:0)+
+      Number(x?.confirmedCount||0);
+    map.set(key, score(g)>score(old) ? {...old,...g} : {...g,...old});
+  }
+  return [...map.values()];
+}
+function backupGuestsSnapshot(reason='manual'){
+  try{
+    const payload={reason,at:new Date().toISOString(),bookings:db.bookings||[],guests:db.guests||[]};
+    const key='dawaa_backup_'+Date.now();
+    localStorage.setItem(key,JSON.stringify(payload));
+    localStorage.setItem('dawaa_last_backup_key',key);
+    return key;
+  }catch(e){console.warn('[backupGuestsSnapshot]',e);return''}
+}
+function clearGuestLocalCachesForBooking(bookingId=getSelectedBookingId()){
+  try{
+    const before=(db.guests||[]).length;
+    db.guests=(db.guests||[]).filter(g=>g.bookingId!==bookingId);
+    localStorage.setItem('dawaa_guests',JSON.stringify(db.guests||[]));
+    localStorage.removeItem('dawaa_deleted_guest_keys');
+    localStorage.removeItem('dawaa_deleted_guest_ids');
+    return before-(db.guests||[]).length;
+  }catch(e){console.warn('[clearGuestLocalCachesForBooking]',e);return 0}
+}
+async function repairGuestDuplicatesAndSync(){
+  const bookingId=getSelectedBookingId();
+  backupGuestsSnapshot('before_dedupe_sync');
+  db.guests=dedupeGuestArray((db.guests||[]).filter(g=>!bookingId || g.bookingId===bookingId).concat((db.guests||[]).filter(g=>bookingId && g.bookingId!==bookingId)));
+  render();
+  try{
+    const res=await fetch('/api/guests-sync?action=dedupe&bookingId='+encodeURIComponent(bookingId||'')+'&ts='+Date.now(),{cache:'no-store'});
+    const data=await res.json();
+    if(data.guests) mergeGuestsFromServer(data.guests);
+    db.guests=dedupeGuestArray(db.guests||[]);
+    render();
+    showToast('تم تنظيف التكرار والمزامنة');
+    return data;
+  }catch(e){
+    console.warn('[repairGuestDuplicatesAndSync]',e);
+    showToast('تعذر تنظيف التكرار من المزامنة');
+    return null;
+  }
+}
+async function deleteAllGuestsForCurrentBooking(){
+  const bookingId=getSelectedBookingId();
+  if(!bookingId) return showToast('اختاري مناسبة أولاً');
+  if(!confirm('سيتم حذف جميع ضيوف هذه المناسبة نهائياً من المزامنة. هل أنتِ متأكدة؟')) return;
+  backupGuestsSnapshot('before_delete_all_booking_guests');
+  clearGuestLocalCachesForBooking(bookingId);
+  render();
+  try{
+    const res=await fetch('/api/guests-sync?action=delete_all_booking&bookingId='+encodeURIComponent(bookingId),{method:'DELETE',cache:'no-store'});
+    const data=await res.json();
+    if(!res.ok || data.success===false) throw new Error(data.message||'فشل الحذف');
+    showToast('تم حذف ضيوف المناسبة نهائياً');
+    await loadGuestsFromServer({silent:true,force:true});
+    render();
+  }catch(e){
+    console.warn('[deleteAllGuestsForCurrentBooking]',e);
+    showToast('تعذر الحذف النهائي من Supabase');
+  }
+}
+
 function mergeGuestsFromServer(remoteGuests=[]){
  const selected=getSelectedBookingId()||db.bookings[0]?.id||'';
  const local=db.guests||[];
@@ -111,7 +202,7 @@ async function loadGuestsFromServer({silent=true,force=false}={}){
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
   const data=await res.json();
   if(!data.success) throw new Error(data.message||'sync failed');
-  const changed=mergeGuestsFromServer(data.guests||[]);
+  const changed=mergeGuestsFromServer(data.guests||[]); db.guests=dedupeGuestArray(db.guests||[]);
   if(!silent) showToast(changed?'تم تحديث الضيوف':'الضيوف محدثين');
   return changed;
  }catch(e){console.warn('[sync]',e); if(!silent) showToast('تعذر تحديث الضيوف'); return false}
@@ -124,7 +215,7 @@ async function saveGuestsToServer(guests=[], {silent=true}={}){
   const res=await fetch('/api/guests-sync',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({booking,guests:list})});
   if(!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
   const data=await res.json(); if(!data.success) throw new Error(data.message||'save failed');
-  if(data.guests?.length) mergeGuestsFromServer(data.guests);
+  if(data.guests?.length) { mergeGuestsFromServer(data.guests); db.guests=dedupeGuestArray(db.guests||[]); }
   if(!silent) showToast('تمت مزامنة الضيوف');
   return true;
  }catch(e){console.warn('[save sync]',e); if(!silent) showToast('تعذر حفظ الضيوف'); return false}
@@ -270,11 +361,28 @@ function updateLiveCountdowns(){
   });
 }
 function currentUpdateTime(){return new Date().toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'});}
-function timeLabel(v){
-  if(!v) return 'لم يتم بعد';
+function timeLabel(v, fallback='غير متوفر'){
+  if(!v) return fallback;
   const d=new Date(v);
-  if(Number.isNaN(d.getTime())) return 'لم يتم بعد';
+  if(Number.isNaN(d.getTime())) return fallback;
   return d.toLocaleTimeString('ar-OM',{hour:'2-digit',minute:'2-digit'});
+}
+function timelineTimeLabel(key, value, state=''){
+  if(value) return timeLabel(value, '');
+  if(key==='created') return 'وقت الإنشاء غير متوفر';
+  if(key==='read') return 'لم يتم التعرف على وقت القراءة';
+  if(key==='sent') return 'بانتظار الإرسال';
+  if(key==='delivered') return 'بانتظار التسليم';
+  if(key==='reply') return 'بانتظار الرد';
+  return state==='unknown' ? 'لم يتم التعرف' : 'غير متوفر';
+}
+function timelineStepClass(key, value, done=false){
+  if(done || value) return 'done';
+  if(key==='read' || key==='created') return 'unknown';
+  return 'wait';
+}
+function timelineStepDot(key, value, done=false){
+  return done || value;
 }
 function eventTimelineData(b, s){
   const guests=db.guests.filter(g=>g.bookingId===b.id);
@@ -357,11 +465,11 @@ function adminGuestDetails(id){
   </div>
   <section class="panel">${cardStatusChip(g)}</section>
   <section class="panel"><h2>Timeline الإرسال</h2><div class="proof-timeline horizontal-proof">
-    <div class="tl"><span class="dot"></span> تم إنشاء سجل الضيف <small>${timeLabel(g.createdAt||g.updatedAt)}</small></div>
-    <div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'لم تُرسل الدعوة بعد'} <small>${timeLabel(g.invitationSentAt)}</small></div>
-    <div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'لم يؤكد التسليم'} <small>${timeLabel(g.deliveredAt)}</small></div>
-    <div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم تُقرأ بعد'} <small>${timeLabel(g.readAt)}</small></div>
-    <div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'لم تؤكد البطاقات'} <small>${timeLabel(g.repliedAt)}</small></div>
+    <div class="tl"><span class="dot"></span> ${g.createdAt||g.updatedAt?'تم إنشاء سجل الضيف':'تم إنشاء سجل الضيف'} <small>${timelineTimeLabel('created',g.createdAt||g.updatedAt)}</small></div>
+    <div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'بانتظار إرسال الدعوة'} <small>${timelineTimeLabel('sent',g.invitationSentAt)}</small></div>
+    <div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'بانتظار تأكيد التسليم'} <small>${timelineTimeLabel('delivered',g.deliveredAt)}</small></div>
+    <div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم يتم التعرف على وقت القراءة'} <small>${timelineTimeLabel('read',g.readAt)}</small></div>
+    <div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'بانتظار الرد'} <small>${timelineTimeLabel('reply',g.repliedAt)}</small></div>
   </div></section>
  </div>`, 'guests');
 }
@@ -808,7 +916,7 @@ function adminGuests(){
  const selectedBooking=getSelectedBookingId();
  const booking=db.bookings.find(b=>b.id===selectedBooking);
  const guests=filteredGuestsList();
- adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير Excel</button></div></div>
+ adminShell(`<div class="section-title-row"><div><span class="eyebrow">الضيوف</span><h1>ضيوف ${escapeHtml(booking?.eventName||'المناسبة')}</h1><p class="muted">كل مناسبة لها قائمة ضيوف منفصلة. اختاري المناسبة أولاً ثم أضيفي أو عدلي أو أرسلي لضيوفها فقط.</p></div><div class="quick-actions"><button class="btn btn-secondary" onclick="loadGuestsFromServer({silent:false,force:true})">تحديث البيانات</button><button class="btn btn-secondary" onclick="triggerImportGuests()">رفع Excel/CSV</button><button class="btn btn-primary" onclick="openGuestModal()">إضافة ضيف</button><button class="btn btn-secondary" onclick="exportGuests()">تصدير Excel</button><button class="btn btn-secondary" onclick="repairGuestDuplicatesAndSync()">تنظيف التكرار</button><button class="btn btn-danger" onclick="deleteAllGuestsForCurrentBooking()">حذف ضيوف المناسبة نهائياً</button></div></div>
  ${bookingSelector()}
  ${metaTemplatePanel(booking||{})}
  ${attachImageGuide()}
@@ -1901,23 +2009,32 @@ async function saveGuest(){
 }
 function deleteGuest(id){
  if(!confirm('حذف الضيف؟'))return;
+ backupGuestsSnapshot('before_delete_guest');
  const guest=db.guests.find(g=>g.id===id || g.dbGuestId===id);
  if(guest){
-   rememberDeletedGuestId(guest.dbGuestId || String(guest.id||'').replace('remote_',''));
-   rememberDeletedGuestKey(guest);
+   if(typeof rememberDeletedGuestId==='function') rememberDeletedGuestId(guest.dbGuestId || String(guest.id||'').replace('remote_',''));
+   if(typeof rememberDeletedGuestKey==='function') rememberDeletedGuestKey(guest);
  }
- const identityKey = guest ? guestIdentityKey(guest) : '';
- db.guests=db.guests.filter(g=>{
+ const identityKey = guest ? guestDedupeKey(guest) : '';
+ db.guests=(db.guests||[]).filter(g=>{
    if(g.id===id || g.dbGuestId===id) return false;
-   if(guest && guestIdentityKey(g)===identityKey) return false;
+   if(guest && guestDedupeKey(g)===identityKey) return false;
    return true;
  });
- showToast('تم الحذف');
+ localStorage.setItem('dawaa_guests',JSON.stringify(db.guests||[]));
+ showToast('تم الحذف محلياً');
  render();
  if(guest){
-   deleteGuestFromServer(guest).then(ok=>{
-     if(ok) showToast('تم حذف الضيف نهائياً من المزامنة');
-     else showToast('تم الحذف محلياً، لكن تعذر حذفه من Supabase');
+   fetch('/api/guests-sync'+(guest.dbGuestId?('?id='+encodeURIComponent(guest.dbGuestId)):'') ,{
+     method:'DELETE',
+     cache:'no-store',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({booking:db.bookings.find(b=>b.id===(guest.bookingId||getSelectedBookingId()))||{},guest})
+   }).then(r=>r.json()).then(data=>{
+     if(data.success) showToast('تم حذف الضيف نهائياً من المزامنة');
+     else showToast('تم الحذف محلياً، وتعذر حذف نسخة المزامنة');
+   }).catch(()=>{
+     showToast('تم الحذف محلياً، وتعذر الاتصال بالمزامنة');
    });
  }
 }
@@ -1978,7 +2095,7 @@ function adminWorkspace(){
  </div>`, 'operations');
 }
 
-function openGuestDrawer(id){const g=db.guests.find(x=>x.id===id); const b=db.bookings.find(x=>x.id===g.bookingId); const d=$('#drawer'); d.innerHTML=`<div class="drawer-head"><button class="btn btn-ghost" onclick="closeDrawer()">إغلاق</button>${statusBadge(g.rsvpStatus)}</div><div class="guest-profile-head"><div class="guest-avatar big">${escapeHtml((g.guestName||'ض')[0])}</div><div><h2>${g.guestName}</h2><p class="muted">${g.phoneNumber} • ${g.cardsCount} بطاقات • ${b?.eventName||''}</p></div></div><div class="drawer-card-summary">${cardStatusChip(g)}</div><div class="quick-actions" style="margin:18px 0"><button class="btn btn-primary" onclick="sendOne('${g.id}')">إعادة إرسال</button><button class="btn btn-secondary" onclick="showToast('تم نسخ الرقم')">نسخ الرقم</button><button class="btn btn-secondary" onclick="editGuest('${g.id}')">تعديل</button><button class="btn btn-ghost" onclick="deleteGuest('${g.id}')">حذف</button></div><h3>Timeline التفصيلي</h3><div class="timeline proof-timeline"><div class="tl"><span class="dot"></span> تم إنشاء سجل الضيف <small>${timeLabel(g.createdAt||g.updatedAt)}</small></div><div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'لم تُرسل الدعوة بعد'} <small>${timeLabel(g.invitationSentAt)}</small></div><div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'لم يؤكد التسليم'} <small>${timeLabel(g.deliveredAt)}</small></div><div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم تُقرأ بعد'} <small>${timeLabel(g.readAt)}</small></div><div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'لم تؤكد البطاقات'} <small>${timeLabel(g.repliedAt)}</small></div></div><h3>بطاقة الدخول</h3><div style="margin-top:12px">${entryCardPreview({guest:g.guestName,code:g.shortCode})}</div>`; d.classList.add('open'); safeIcons();}
+function openGuestDrawer(id){const g=db.guests.find(x=>x.id===id); const b=db.bookings.find(x=>x.id===g.bookingId); const d=$('#drawer'); d.innerHTML=`<div class="drawer-head"><button class="btn btn-ghost" onclick="closeDrawer()">إغلاق</button>${statusBadge(g.rsvpStatus)}</div><div class="guest-profile-head"><div class="guest-avatar big">${escapeHtml((g.guestName||'ض')[0])}</div><div><h2>${g.guestName}</h2><p class="muted">${g.phoneNumber} • ${g.cardsCount} بطاقات • ${b?.eventName||''}</p></div></div><div class="drawer-card-summary">${cardStatusChip(g)}</div><div class="quick-actions" style="margin:18px 0"><button class="btn btn-primary" onclick="sendOne('${g.id}')">إعادة إرسال</button><button class="btn btn-secondary" onclick="showToast('تم نسخ الرقم')">نسخ الرقم</button><button class="btn btn-secondary" onclick="editGuest('${g.id}')">تعديل</button><button class="btn btn-ghost" onclick="deleteGuest('${g.id}')">حذف</button></div><h3>Timeline التفصيلي</h3><div class="timeline proof-timeline"><div class="tl"><span class="dot"></span> ${g.createdAt||g.updatedAt?'تم إنشاء سجل الضيف':'تم إنشاء سجل الضيف'} <small>${timelineTimeLabel('created',g.createdAt||g.updatedAt)}</small></div><div class="tl"><span class="dot"></span> ${g.invitationSentAt?'تم إرسال الدعوة عبر WhatsApp':'بانتظار إرسال الدعوة'} <small>${timelineTimeLabel('sent',g.invitationSentAt)}</small></div><div class="tl"><span class="dot"></span> ${g.deliveredAt?'تم تسليم الرسالة':'بانتظار تأكيد التسليم'} <small>${timelineTimeLabel('delivered',g.deliveredAt)}</small></div><div class="tl"><span class="dot"></span> ${g.readAt?'تمت قراءة الرسالة':'لم يتم التعرف على وقت القراءة'} <small>${timelineTimeLabel('read',g.readAt)}</small></div><div class="tl"><span class="dot"></span> ${g.repliedAt?'تم تسجيل الرد':'بانتظار الرد'} <small>${timelineTimeLabel('reply',g.repliedAt)}</small></div></div><h3>بطاقة الدخول</h3><div style="margin-top:12px">${entryCardPreview({guest:g.guestName,code:g.shortCode})}</div>`; d.classList.add('open'); safeIcons();}
 function closeDrawer(){$('#drawer')?.classList.remove('open')}
 
 function statusArabicText(status){
@@ -2118,18 +2235,18 @@ function clientGuestDetails(id){
  if(!g) return showToast('لا يمكن عرض هذا الضيف');
  const total=Number(g.cardsCount||1), c=Number(g.confirmedCount||0), d=Number(g.declinedCount||0), p=Math.max(0,total-c-d);
  const steps=[
-  ['إنشاء الضيف',g.createdAt||g.updatedAt,true],
-  ['إرسال الدعوة',g.invitationSentAt,Boolean(g.invitationSentAt)],
-  ['تسليم الرسالة',g.deliveredAt,Boolean(g.deliveredAt)],
-  ['قراءة الرسالة',g.readAt,Boolean(g.readAt)],
-  ['تسجيل الرد',g.repliedAt,Boolean(g.repliedAt)]
+  {key:'created', title:'إنشاء الضيف', time:g.createdAt||g.updatedAt, done:Boolean(g.createdAt||g.updatedAt), fallback:'وقت الإنشاء غير متوفر'},
+  {key:'sent', title:'إرسال الدعوة', time:g.invitationSentAt, done:Boolean(g.invitationSentAt), fallback:'بانتظار الإرسال'},
+  {key:'delivered', title:'تسليم الرسالة', time:g.deliveredAt, done:Boolean(g.deliveredAt), fallback:'بانتظار التسليم'},
+  {key:'read', title:'قراءة الرسالة', time:g.readAt, done:Boolean(g.readAt), fallback:'لم يتم التعرف على وقت القراءة'},
+  {key:'reply', title:'تسجيل الرد', time:g.repliedAt, done:Boolean(g.repliedAt), fallback:'بانتظار الرد'}
  ];
  const div=document.createElement('div');
  div.className='client-detail-overlay open';
  div.innerHTML=`<div class="client-detail-card"><button class="client-detail-close" onclick="this.closest('.client-detail-overlay').remove()">إغلاق</button>
   <span class="eyebrow">تفاصيل الضيف</span><h2>${escapeHtml(g.guestName)}</h2><p class="muted">${escapeHtml(g.phoneNumber||'')} • ${total} بطاقة</p>
   <div class="client-guest-breakdown"><div class="green"><b>${c}</b><small>حاضر</small></div><div class="red"><b>${d}</b><small>معتذر</small></div><div class="orange"><b>${p}</b><small>لم يؤكد</small></div></div>
-  <h3>Timeline الإرسال الحقيقي</h3><div class="client-proof-timeline">${steps.map(([t,time,done])=>`<div class="${done?'done':'wait'}"><span></span><b>${t}</b><small>${timeLabel(time)}</small></div>`).join('')}</div>
+  <h3>Timeline الإرسال الحقيقي</h3><div class="client-proof-timeline">${steps.map(s=>`<div class="${timelineStepClass(s.key,s.time,s.done)}"><span></span><b>${s.title}</b><small>${timelineTimeLabel(s.key,s.time,s.done?'done':'')}</small></div>`).join('')}</div>
  </div>`;
  document.body.appendChild(div);
 }

@@ -121,6 +121,8 @@ function fromDbGuest(row) {
     declinedCount: row.declined_count || 0,
     pendingCount: row.pending_count ?? row.cards_count ?? 1,
     metaMessageId: row.meta_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
     invitationSentAt: row.invitation_sent_at,
     deliveredAt: row.delivered_at,
     readAt: row.read_at,
@@ -204,79 +206,19 @@ function normalizeIdentityName(value='') {
 }
 
 
+
 async function forceDeleteGuestsByIdentity(guest = {}, booking = {}) {
-  if (!isConfigured()) return { deleted: false, reason: 'not_configured' };
-
-  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
-  const guestName = guest.guestName || guest.guest_name || guest.name || '';
-  const targetName = normalizeIdentityName(guestName);
-  const deletedIds = [];
-  const errors = [];
-
-  async function deleteById(id) {
-    if (!isUuid(id) || deletedIds.includes(id)) return;
-    try {
-      await request(`/guests?id=eq.${eq(id)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
-      deletedIds.push(id);
-    } catch (error) {
-      errors.push(error.message || String(error));
-    }
-  }
-
-  const directId = guest.dbGuestId || guest.db_guest_id || guest.id;
-  await deleteById(directId);
-
-  if (phoneNumber) {
-    try {
-      const rows = await request(`/guests?phone_number=eq.${eq(phoneNumber)}&select=id,guest_name,phone_number,booking_id`);
-      for (const row of (Array.isArray(rows) ? rows : [])) {
-        if (!targetName || normalizeIdentityName(row.guest_name) === targetName) {
-          await deleteById(row.id);
-        }
-      }
-    } catch (error) {
-      errors.push(error.message || String(error));
-    }
-  }
-
-  return { deleted: deletedIds.length > 0, deletedIds, errors };
+  return deleteGuestEverywhere(guest, booking);
 }
 
 async function deleteGuestsByIdentity(guest = {}, booking = {}) {
-  return forceDeleteGuestsByIdentity(guest, booking);
+  return deleteGuestEverywhere(guest, booking);
 }
 
 async function deleteGuestsByIdentity(guest = {}, booking = {}) {
-  if (!isConfigured()) return { deleted: false, reason: 'not_configured' };
-  const bookingId = guest.bookingId || guest.booking_id || booking.id || booking.bookingId;
-  const phoneNumber = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile);
-  const guestName = guest.guestName || guest.guest_name || guest.name || '';
-  if (!isUuid(bookingId) || !phoneNumber || !guestName) return { deleted: false, reason: 'missing_identity' };
-
-  try {
-    // Delete exact phone + name first.
-    await request(`/guests?booking_id=eq.${eq(bookingId)}&phone_number=eq.${eq(phoneNumber)}&guest_name=eq.${eq(guestName)}`, {
-      method: 'DELETE',
-      headers: { Prefer: 'return=minimal' }
-    });
-
-    // Also delete same phone where old data may use a slightly different Arabic normalization.
-    const rows = await request(`/guests?booking_id=eq.${eq(bookingId)}&phone_number=eq.${eq(phoneNumber)}&select=id,guest_name`);
-    const normalizedTarget = normalizeIdentityName(guestName);
-    for (const row of (Array.isArray(rows) ? rows : [])) {
-      if (normalizeIdentityName(row.guest_name) === normalizedTarget && isUuid(row.id)) {
-        await request(`/guests?id=eq.${eq(row.id)}`, {
-          method: 'DELETE',
-          headers: { Prefer: 'return=minimal' }
-        });
-      }
-    }
-    return { deleted: true };
-  } catch (error) {
-    console.error('[Supabase] deleteGuestsByIdentity failed', error.message || error);
-    return { deleted: false, error: error.message || String(error) };
-  }
+  return deleteGuestEverywhere(guest, booking);
 }
+
 
 async function deleteGuest(id) {
   if (!isConfigured() || !id) return null;
@@ -381,10 +323,188 @@ async function ensureGuestExists(guest = {}, booking = {}) {
   return fromDbGuest(Array.isArray(data) ? data[0] : data);
 }
 
-async function listGuests(limit = 1000) {
+async function listGuests(limit = 1000, bookingId = '') {
   if (!isConfigured()) return [];
-  const data = await request(`/guests?select=*&order=updated_at.desc&limit=${Number(limit) || 1000}`);
-  return (Array.isArray(data) ? data : []).map(fromDbGuest).filter(Boolean);
+  const rows = await listGuestsRaw(limit, bookingId);
+  const seen = new Map();
+
+  for (const row of rows) {
+    const key = guestIdentityKey(row);
+    if (!key) continue;
+    const old = seen.get(key);
+    if (!old) {
+      seen.set(key, row);
+      continue;
+    }
+
+    const oldScore = (old.meta_message_id ? 100 : 0) + (['confirmed','declined','sent','delivered','read'].includes(old.rsvp_status || old.status) ? 50 : 0) + Number(old.confirmed_count || 0);
+    const rowScore = (row.meta_message_id ? 100 : 0) + (['confirmed','declined','sent','delivered','read'].includes(row.rsvp_status || row.status) ? 50 : 0) + Number(row.confirmed_count || 0);
+    if (rowScore > oldScore) seen.set(key, row);
+  }
+
+  return [...seen.values()].map(fromDbGuest).filter(Boolean);
+}
+
+
+function normalizeGuestNameForKey(value='') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[ً-ٰٟ]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ');
+}
+
+function guestIdentityKey(rowOrGuest = {}) {
+  const phone = normalizePhone(rowOrGuest.phone_number || rowOrGuest.phoneNumber || rowOrGuest.phone || rowOrGuest.mobile || '');
+  const name = normalizeGuestNameForKey(rowOrGuest.guest_name || rowOrGuest.guestName || rowOrGuest.name || '');
+  const booking = rowOrGuest.booking_id || rowOrGuest.bookingId || '';
+  // Main dedupe identity: booking + phone + normalized name.
+  // This prevents two display orders, alphabetical/order-number duplicates, from becoming two guests.
+  return `${booking}|${phone}|${name}`;
+}
+
+async function listGuestsRaw(limit = 5000, bookingId = '') {
+  if (!isConfigured()) return [];
+  const safeLimit = Number(limit) || 5000;
+  const path = isUuid(bookingId)
+    ? `/guests?booking_id=eq.${eq(bookingId)}&select=*&order=created_at.asc&limit=${safeLimit}`
+    : `/guests?select=*&order=created_at.asc&limit=${safeLimit}`;
+  const data = await request(path);
+  return Array.isArray(data) ? data : [];
+}
+
+async function deleteGuestEverywhere(guest = {}, booking = {}) {
+  if (!isConfigured()) return { deleted: false, deletedIds: [], reason: 'not_configured' };
+
+  const bookingId = guest.bookingId || guest.booking_id || booking.id || booking.bookingId || '';
+  const phone = normalizePhone(guest.phoneNumber || guest.phone_number || guest.phone || guest.mobile || '');
+  const nameKey = normalizeGuestNameForKey(guest.guestName || guest.guest_name || guest.name || '');
+  const directIds = [guest.dbGuestId, guest.db_guest_id, guest.id].filter(isUuid);
+  const deletedIds = [];
+  const errors = [];
+
+  async function deleteById(id) {
+    if (!isUuid(id) || deletedIds.includes(id)) return;
+    try {
+      await request(`/guests?id=eq.${eq(id)}`, {
+        method: 'DELETE',
+        headers: { Prefer: 'return=minimal' }
+      });
+      deletedIds.push(id);
+    } catch (error) {
+      errors.push(error.message || String(error));
+    }
+  }
+
+  for (const id of directIds) await deleteById(id);
+
+  // Find all likely duplicates, including rows created once by order and once alphabetically.
+  try {
+    const rawRows = isUuid(bookingId) ? await listGuestsRaw(5000, bookingId) : await listGuestsRaw(5000);
+    for (const row of rawRows) {
+      const rowPhone = normalizePhone(row.phone_number || row.phone || '');
+      const rowNameKey = normalizeGuestNameForKey(row.guest_name || row.name || '');
+      const sameBooking = !isUuid(bookingId) || row.booking_id === bookingId;
+      const samePhone = phone && rowPhone === phone;
+      const sameName = nameKey && rowNameKey === nameKey;
+      if (sameBooking && ((samePhone && sameName) || (samePhone && !nameKey) || (!phone && sameName))) {
+        await deleteById(row.id);
+      }
+    }
+  } catch (error) {
+    errors.push(error.message || String(error));
+  }
+
+  return { deleted: deletedIds.length > 0, deletedIds, errors };
+}
+
+async function deleteGuestsByBooking(bookingId) {
+  if (!isConfigured() || !isUuid(bookingId)) return { deleted: false, deletedIds: [], reason: 'missing_booking_uuid' };
+  const rows = await listGuestsRaw(5000, bookingId);
+  const deletedIds = [];
+  const errors = [];
+
+  for (const row of rows) {
+    try {
+      await request(`/guests?id=eq.${eq(row.id)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+      deletedIds.push(row.id);
+    } catch (error) {
+      errors.push(error.message || String(error));
+    }
+  }
+
+  return { deleted: deletedIds.length > 0, deletedIds, errors, count: deletedIds.length };
+}
+
+async function dedupeGuestsByBooking(bookingId = '') {
+  if (!isConfigured()) return { deduped: false, removed: 0, kept: 0, reason: 'not_configured' };
+  const rows = await listGuestsRaw(5000, bookingId);
+  const groups = new Map();
+
+  for (const row of rows) {
+    const key = guestIdentityKey(row);
+    if (!key || key.split('|').filter(Boolean).length < 2) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+
+  const removedIds = [];
+  const keptIds = [];
+  const errors = [];
+
+  for (const [key, group] of groups.entries()) {
+    if (group.length <= 1) {
+      if (group[0]?.id) keptIds.push(group[0].id);
+      continue;
+    }
+
+    // Keep the oldest real row, but prefer row that has status/confirmed counts/message id.
+    group.sort((a, b) => {
+      const score = (r) =>
+        (r.meta_message_id ? 100 : 0) +
+        (['confirmed','declined','sent','delivered','read'].includes(r.rsvp_status || r.status) ? 50 : 0) +
+        (Number(r.confirmed_count || 0) * 10);
+      const diff = score(b) - score(a);
+      if (diff) return diff;
+      return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    });
+
+    const keep = group[0];
+    keptIds.push(keep.id);
+
+    // Merge useful values into kept record before deleting duplicates.
+    const merged = {};
+    for (const row of group.slice(1)) {
+      if (!keep.meta_message_id && row.meta_message_id) merged.metaMessageId = row.meta_message_id;
+      if (!keep.invitation_sent_at && row.invitation_sent_at) merged.invitationSentAt = row.invitation_sent_at;
+      if (!keep.delivered_at && row.delivered_at) merged.deliveredAt = row.delivered_at;
+      if (!keep.read_at && row.read_at) merged.readAt = row.read_at;
+      if (!keep.replied_at && row.replied_at) merged.repliedAt = row.replied_at;
+      if ((row.rsvp_status || row.status) && !['pending', ''].includes(row.rsvp_status || row.status)) merged.rsvpStatus = row.rsvp_status || row.status;
+      if (Number(row.confirmed_count || 0) > Number(keep.confirmed_count || 0)) merged.confirmedCount = Number(row.confirmed_count || 0);
+      if (Number(row.declined_count || 0) > Number(keep.declined_count || 0)) merged.declinedCount = Number(row.declined_count || 0);
+    }
+
+    if (Object.keys(merged).length) {
+      try { await updateGuest(keep.id, merged); } catch (error) { errors.push(error.message || String(error)); }
+    }
+
+    for (const row of group.slice(1)) {
+      try {
+        await request(`/guests?id=eq.${eq(row.id)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+        removedIds.push(row.id);
+      } catch (error) {
+        errors.push(error.message || String(error));
+      }
+    }
+  }
+
+  return { deduped: true, removed: removedIds.length, kept: keptIds.length, removedIds, keptIds, errors };
 }
 
 async function insertMessage(message) {
@@ -461,5 +581,8 @@ module.exports = {
   insertMessage,
   logTimeline,
   logWebhookEvent,
-  isUuid
+  isUuid,
+  dedupeGuestsByBooking,
+  deleteGuestsByBooking,
+  deleteGuestEverywhere
 };

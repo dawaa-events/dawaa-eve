@@ -2413,3 +2413,8 @@ button[onclick="logout()"]:before{
 @media(max-width:850px){
   .template-card-grid{grid-template-columns:1fr}
 }
+
+.client-proof-timeline .unknown span{background:#c9c1d8!important;}
+.client-proof-timeline .unknown b{color:#6d617b!important;}
+.client-proof-timeline .unknown small{color:#8b7f99!important;}
+.client-proof-timeline .unknown:before{background:#d9d1e8!important;}

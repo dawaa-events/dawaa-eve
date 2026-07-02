@@ -1,4 +1,4 @@
-const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity, forceDeleteGuestsByIdentity } = require('./_lib/supabase');
+const { listGuests, ensureGuestExists, deleteGuest, deleteGuestsByIdentity, forceDeleteGuestsByIdentity, deleteGuestEverywhere, deleteGuestsByBooking, dedupeGuestsByBooking } = require('./_lib/supabase');
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -22,7 +22,15 @@ function readBody(req) {
 module.exports = async function handler(req, res) {
   try {
     if (req.method === 'GET') {
-      const guests = await listGuests(1000);
+      const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+      const bookingId = url.searchParams.get('bookingId') || '';
+      const action = url.searchParams.get('action') || '';
+      if (action === 'dedupe') {
+        const result = await dedupeGuestsByBooking(bookingId);
+        const guests = await listGuests(1000, bookingId);
+        return json(res, 200, { success: true, action, result, guests });
+      }
+      const guests = await listGuests(1000, bookingId);
       return json(res, 200, { success: true, guests });
     }
 
@@ -30,17 +38,31 @@ module.exports = async function handler(req, res) {
     if (req.method === 'DELETE') {
       let body = {};
       try { body = await readBody(req); } catch (_) {}
-      if (body?.guest) {
-        const result = await forceDeleteGuestsByIdentity(body.guest, body.booking || {});
-        return json(res, 200, { success: true, ...result });
-      }
-
       const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
       const id = url.searchParams.get('id');
-      if (!id) return json(res, 400, { success: false, message: 'Missing guest id' });
-      const result = await deleteGuest(id);
-      if (!result) return json(res, 404, { success: false, message: 'Guest not deleted or not found' });
-      return json(res, 200, { success: true, deleted: true, id });
+      const bookingId = url.searchParams.get('bookingId') || body?.bookingId || body?.booking?.id || '';
+      const action = url.searchParams.get('action') || body?.action || '';
+
+      if (action === 'delete_all_booking') {
+        const result = await deleteGuestsByBooking(bookingId);
+        return json(res, 200, { success: true, deleted: true, action, result });
+      }
+
+      let result = null;
+      if (body?.guest) {
+        result = await deleteGuestEverywhere(body.guest, body.booking || {});
+      }
+
+      if (id) {
+        const idResult = await deleteGuest(id);
+        result = { ...(result || {}), idDeleted: Boolean(idResult), id };
+      }
+
+      if (!id && !body?.guest) {
+        return json(res, 400, { success: false, message: 'Missing guest or id' });
+      }
+
+      return json(res, 200, { success: true, deleted: true, ...(result || {}) });
     }
 
     if (req.method === 'POST') {
